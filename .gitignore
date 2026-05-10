@@ -1,0 +1,39 @@
+# Julia artifacts
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+/Manifest.toml
+
+# Julia compiled cache
+.julia/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keys / secrets
+*.pem
+*.key
+*.env
+.env*
+secrets/
+credentials/
+
+# Benchmark output
+benchmark/results/
+*.json.bak
+
+# Logs
+*.log
+nohup.out
+
+# Temporary files
+/tmp/
+*.tmp
+*.bak

@@ -1,0 +1,25 @@
+name = "MORKTensorNetworks"
+uuid = "e1f2a3b4-c5d6-7890-abcd-ef1234567890"
+version = "0.1.0"
+authors = ["PRIMUS Team"]
+
+[deps]
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MORK = "162375cb-4023-4ef9-895b-22c0041d5c13"
+PathMap = "a8b3d4e5-f012-4567-89ab-cdef01234567"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[compat]
+KernelAbstractions = "0.9.41"
+MORK = "0.1"
+PathMap = "0.3"
+SparseArrays = "1.12.0"
+julia = "1.12"
+
+[extras]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

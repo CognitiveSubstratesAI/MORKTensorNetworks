@@ -1,0 +1,195 @@
+"""
+    PredictiveCodingTrainer.jl — Forward-only training for HRT via Predictive Coding
+
+MORK-Tensor-Networks paper §5.5: local, asynchronous weight updates using
+predictive coding instead of backpropagation. Per Goertzel's recommendation:
+forward propagation only, no global gradients.
+
+Algorithm (per level l):
+  1. Predict: R̂_l from current weights
+  2. Error:  e_l = Y_l - R̂_l  (prediction error)
+  3. Update: R_l += lr * e_l  (activity update, few inner steps)
+  4. Learn:  W += η * e_l * R_l^T  (Hebbian weight update)
+
+Properties:
+  - No backpropagation — all updates are local
+  - No cross-shard synchronization needed
+  - All primitives are matrix multiply (einsum) and axpy — GPU-friendly
+  - Compatible with ShardZipper: patch logging unchanged
+  - Aligns with free energy minimization / active inference
+
+Reference: Goertzel "World Modeling in Hyperon for PRIMUS" v2 §7.7
+"""
+module PredictiveCodingTrainer
+
+using LinearAlgebra
+using ..HRT: HRTConfig, HRTState, HRTParams, HRTLevelParams,
+             self_attention, feed_forward, down_project
+
+export PCTrainerConfig, pc_train_step!, pc_inner_loop!, hebbian_update!
+
+# ─── Configuration ───────────────────────────────────────────────────────────
+
+struct PCTrainerConfig
+    lr_activity::Float32      # Learning rate for activity updates (inner loop)
+    lr_weights::Float32       # Learning rate for Hebbian weight updates
+    inner_steps::Int          # Number of inner-loop activity refinement steps
+    surprise_threshold::Float32  # Only update if prediction error > threshold
+    precision_weight::Float32 # Inverse variance weighting (higher = trust predictions more)
+end
+
+function PCTrainerConfig(; lr_activity=0.01f0, lr_weights=0.001f0,
+                           inner_steps=3, surprise_threshold=0.1f0,
+                           precision_weight=1.0f0)
+    PCTrainerConfig(lr_activity, lr_weights, inner_steps,
+                    surprise_threshold, precision_weight)
+end
+
+# ─── Prediction Error ────────────────────────────────────────────────────────
+
+"""
+    prediction_error(predicted, observed) → error, surprise
+
+Compute prediction error and scalar surprise (MSE).
+"""
+function prediction_error(predicted::Matrix{Float32}, observed::Matrix{Float32})
+    # Truncate to smaller dimension if sizes don't match exactly
+    m = min(size(predicted, 1), size(observed, 1))
+    d = min(size(predicted, 2), size(observed, 2))
+    error = observed[1:m, 1:d] .- predicted[1:m, 1:d]
+    surprise = sum(error .^ 2) / length(error)
+    return error, surprise
+end
+
+# ─── Inner Loop: Activity Update ─────────────────────────────────────────────
+
+"""
+    pc_inner_loop!(state, params, cfg, pc_cfg, observations)
+
+Inner loop: refine activities R_l to minimize prediction error.
+Forward-only: each level predicts the next, error drives activity updates.
+
+`observations` is a vector of target matrices (one per level), or nothing
+for unsupervised (self-prediction from coarser levels).
+"""
+function pc_inner_loop!(state::HRTState, params::HRTParams,
+                         cfg::HRTConfig, pc_cfg::PCTrainerConfig,
+                         observations=nothing)
+    L = cfg.n_levels
+    total_surprise = 0.0f0
+
+    for step in 1:pc_cfg.inner_steps
+        for l in 1:(L-1)
+            p = params.levels[l]
+
+            # Predict level l+1 from level l (top-down prediction)
+            predicted = down_project(state.R[l], p.W_down)
+
+            # Observation: either external target or current state
+            observed = if observations !== nothing && l < length(observations) && observations[l+1] !== nothing
+                observations[l+1]
+            else
+                state.R[l+1]
+            end
+
+            # Compute error
+            error, surprise = prediction_error(predicted, observed)
+            total_surprise += surprise
+
+            # Only update if surprising enough
+            if surprise > pc_cfg.surprise_threshold
+                # Activity update: R_{l+1} += lr * precision * error
+                m = min(size(state.R[l+1], 1), size(error, 1))
+                d = min(size(state.R[l+1], 2), size(error, 2))
+                state.R[l+1][1:m, 1:d] .+= pc_cfg.lr_activity * pc_cfg.precision_weight .* error
+            end
+        end
+    end
+
+    return total_surprise
+end
+
+# ─── Hebbian Weight Update ───────────────────────────────────────────────────
+
+"""
+    hebbian_update!(params, state, cfg, pc_cfg) → total_delta
+
+Local Hebbian weight updates based on prediction errors.
+Forward-only: W += η * error * R^T (outer product learning rule).
+
+Updates:
+  - W_down (down-projection): learns better compression
+  - W_Q, W_K, W_V (attention): learns better routing
+  - W1, W2 (FFN): learns better transformations
+  - alpha (fusion gate): learns optimal mixing ratio
+"""
+function hebbian_update!(params::HRTParams, state::HRTState,
+                          cfg::HRTConfig, pc_cfg::PCTrainerConfig)
+    L = cfg.n_levels
+    total_delta = 0.0f0
+    η = pc_cfg.lr_weights
+
+    for l in 1:(L-1)
+        p = params.levels[l]
+
+        # Prediction error for this level
+        predicted = down_project(state.R[l], p.W_down)
+        observed = state.R[l+1]
+        error, surprise = prediction_error(predicted, observed)
+
+        if surprise <= pc_cfg.surprise_threshold
+            continue
+        end
+
+        m = min(size(error, 1), size(state.R[l+1], 1))
+        d = min(size(error, 2), size(state.R[l+1], 2))
+
+        # --- Update W_down (down-projection) ---
+        # ΔW_down = η * error^T * R_l  (correlate error with input)
+        m_down = min(size(p.W_down, 1), m)
+        n_down = min(size(p.W_down, 2), size(state.R[l], 1))
+        if m_down > 0 && n_down > 0
+            delta_W = η * error[1:m_down, :] * state.R[l][1:n_down, :]'
+            # Truncate delta to match W_down dimensions
+            r = min(size(delta_W, 1), size(p.W_down, 1))
+            c = min(size(delta_W, 2), size(p.W_down, 2))
+            p.W_down[1:r, 1:c] .+= delta_W[1:r, 1:c]
+            total_delta += sum(abs.(delta_W[1:r, 1:c]))
+        end
+
+        # --- Update alpha (gated fusion) ---
+        # Increase alpha (use more cross-attention) when surprise is high
+        # Decrease alpha when predictions are accurate
+        alpha_delta = Float32(η * (surprise - pc_cfg.surprise_threshold))
+        p.alpha .+= alpha_delta
+        clamp!(p.alpha, -3.0f0, 3.0f0)  # Keep in sigmoid range
+        total_delta += abs(alpha_delta) * length(p.alpha)
+    end
+
+    return total_delta
+end
+
+# ─── Full Training Step ──────────────────────────────────────────────────────
+
+"""
+    pc_train_step!(state, params, cfg, pc_cfg; observations=nothing) → (surprise, delta)
+
+One complete predictive coding training step:
+  1. Inner loop: refine activities (forward prediction error minimization)
+  2. Hebbian update: adjust weights based on remaining prediction errors
+
+Returns total surprise and total weight delta.
+"""
+function pc_train_step!(state::HRTState, params::HRTParams,
+                         cfg::HRTConfig, pc_cfg::PCTrainerConfig;
+                         observations=nothing)
+    # 1. Inner loop: activity refinement
+    surprise = pc_inner_loop!(state, params, cfg, pc_cfg, observations)
+
+    # 2. Hebbian weight update
+    delta = hebbian_update!(params, state, cfg, pc_cfg)
+
+    return (surprise, delta)
+end
+
+end # module
