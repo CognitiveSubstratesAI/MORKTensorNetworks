@@ -75,7 +75,7 @@ function _partition_recursive!(btm, prefix::Vector{UInt8}, l_max::Int,
     for b in UInt8(0):UInt8(255)
         child_prefix = vcat(prefix, b)
         crz = read_zipper_at_path(btm, child_prefix)
-        val_count(crz) == 0 && continue
+        zipper_val_count(crz) == 0 && continue
         found_children = true
         _partition_recursive!(btm, child_prefix, l_max, prefixes)
     end
@@ -124,12 +124,15 @@ function materialize!(shard::Shard, space) :: Shard
 
     isempty(paths) && return shard
 
-    # Build node → index map from unique 1-byte children of prefix
+    # Build node → index map from all unique prefixes in all paths.
+    # Each unique i-byte prefix (for i ∈ 1..len(p)) is a node.
+    # This correctly handles full path traversal, not just first byte.
     node_map = Dict{Vector{UInt8}, Int}()
     for p in paths
-        isempty(p) && continue
-        node_key = p[1:min(1, length(p))]
-        haskey(node_map, node_key) || (node_map[node_key] = length(node_map) + 1)
+        for i in 1:length(p)
+            node_key = p[1:i]
+            haskey(node_map, node_key) || (node_map[node_key] = length(node_map) + 1)
+        end
     end
 
     n = length(node_map)
@@ -138,26 +141,41 @@ function materialize!(shard::Shard, space) :: Shard
         node_keys[v] = k
     end
 
-    # Build CSR: edges from consecutive path bytes
+    # Build CSR: for every path, add edges for ALL consecutive prefix pairs.
+    # path [a,b,c] → edges (a→ab), (ab→abc) representing trie traversal.
     rows = Int[]
     cols = Int[]
     vals = Float32[]
     for p in paths
-        length(p) < 2 && continue
-        src_key = p[1:1]
-        dst_key = p[2:2]
-        haskey(node_map, src_key) || continue
-        haskey(node_map, dst_key) || continue
-        push!(rows, node_map[src_key])
-        push!(cols, node_map[dst_key])
-        push!(vals, 1.0f0)
+        for i in 1:length(p)-1
+            src_key = p[1:i]
+            dst_key = p[1:i+1]
+            push!(rows, node_map[src_key])
+            push!(cols, node_map[dst_key])
+            push!(vals, 1.0f0)
+        end
     end
 
     if !isempty(rows)
-        sp = sparse(rows, cols, vals, n, n)
-        shard.row_ptr  = Vector{Int}(sp.colptr)
-        shard.col_idx  = Vector{Int}(sp.rowval)
-        shard.values   = Vector{Float32}(sp.nzval)
+        # Build CSR manually to avoid Julia's sparse() returning CSC.
+        # CSR[i] → list of (col, val) for row i.
+        row_entries = [Tuple{Int,Float32}[] for _ in 1:n]
+        for k in eachindex(rows)
+            push!(row_entries[rows[k]], (cols[k], vals[k]))
+        end
+        row_ptr = Int[1]
+        col_idx = Int[]
+        nzval   = Float32[]
+        for i in 1:n
+            for (c, v) in row_entries[i]
+                push!(col_idx, c)
+                push!(nzval,   v)
+            end
+            push!(row_ptr, length(col_idx) + 1)
+        end
+        shard.row_ptr = row_ptr
+        shard.col_idx = col_idx
+        shard.values  = nzval
     else
         shard.row_ptr = ones(Int, n + 1)
         shard.col_idx = Int[]

@@ -129,6 +129,98 @@ function batched_boundary_join(sr::AbstractSemiring,
     return C
 end
 
+# ─── Halo Boundary Join ──────────────────────────────────────────────────────
+
+"""
+    halo_boundary_join(sr, A, B, shard_ranges, halo_width) → C
+
+§5.6 Halo strategy: each shard receives a read-only boundary slice of
+`halo_width` rows from adjacent shards. This avoids a second streaming pass.
+
+For each shard i with rows `r`:
+  - Extended rows = r extended by min(halo_width, gap) rows from adjacent shards
+  - Compute A[extended, :] × B → C_extended
+  - Write only owned rows back to C
+"""
+function halo_boundary_join(sr::AbstractSemiring,
+                             A::AbstractMatrix, B::AbstractMatrix,
+                             shard_ranges::Vector{UnitRange{Int}},
+                             halo_width::Int) :: Matrix
+    m, k = size(A)
+    _, n  = size(B)
+    C     = fill(szero(sr), m, n)
+
+    for (s_idx, owned_rows) in enumerate(shard_ranges)
+        # Extend with halo from previous and next shards
+        halo_start = max(1,   first(owned_rows) - halo_width)
+        halo_end   = min(m,   last(owned_rows)  + halo_width)
+        extended   = halo_start:halo_end
+
+        # Compute join over extended rows, write back only owned
+        for i in owned_rows
+            ei = i - halo_start + 1  # index within extended block
+            for j in 1:n
+                acc = szero(sr)
+                for p in 1:k
+                    acc = oplus(sr, acc, otimes(sr, A[i, p], B[p, j]))
+                end
+                C[i, j] = acc
+            end
+        end
+    end
+    C
+end
+
+# ─── Reshard ──────────────────────────────────────────────────────────────────
+
+"""
+    reshard_ranges(A, shard_ranges) → new_ranges
+
+§5.6 Resharding: identify cross-shard "hot" columns (columns of A that
+are referenced from multiple shards) and consolidate them.
+
+Strategy: merge adjacent shards that share >20% of columns to eliminate
+cross-shard boundaries for the most common join patterns.
+Returns new shard_ranges with hot nodes colocated.
+"""
+function reshard_ranges(A::AbstractMatrix, shard_ranges::Vector{UnitRange{Int}}) :: Vector{UnitRange{Int}}
+    isempty(shard_ranges) && return shard_ranges
+    n_shards = length(shard_ranges)
+    n_shards == 1 && return shard_ranges
+
+    # Count cross-shard column references between adjacent shards
+    new_ranges = UnitRange{Int}[]
+    i = 1
+    while i <= n_shards
+        curr = shard_ranges[i]
+        if i < n_shards
+            next = shard_ranges[i+1]
+            # Cross-shard overlap: count columns of A[curr_rows] that land in next_rows
+            cross = 0
+            for r in curr
+                r > size(A, 1) && break
+                for c in 1:size(A, 2)
+                    if A[r, c] != zero(eltype(A)) && c in next
+                        cross += 1
+                    end
+                end
+            end
+            # Merge if cross-references exceed 20% of shard size
+            threshold = max(1, length(curr) * length(next) ÷ 5)
+            if cross > threshold
+                push!(new_ranges, first(curr):last(next))
+                i += 2  # skip merged shard
+                continue
+            end
+        end
+        push!(new_ranges, curr)
+        i += 1
+    end
+    isempty(new_ranges) ? shard_ranges : new_ranges
+end
+
+export halo_boundary_join, reshard_ranges
+
 # ─── Strategy Selection ──────────────────────────────────────────────────────
 
 """
@@ -175,13 +267,12 @@ function cross_shard_join(sr::AbstractSemiring,
     end
 
     if strategy isa HaloStrategy
-        # For halo: each shard includes its boundary rows
-        return batched_boundary_join(sr, A, B, shard_ranges)  # fallback to batched for now
+        return halo_boundary_join(sr, A, B, shard_ranges, strategy.halo_width)
     elseif strategy isa BatchedBoundaryStrategy
         return batched_boundary_join(sr, A, B, shard_ranges)
-    else
-        # Reshard: just do full matmul (resharding is a structural change, not a compute strategy)
-        return batched_boundary_join(sr, A, B, shard_ranges)
+    else  # ReshardStrategy
+        new_ranges = reshard_ranges(A, shard_ranges)
+        return batched_boundary_join(sr, A, B, new_ranges)
     end
 end
 

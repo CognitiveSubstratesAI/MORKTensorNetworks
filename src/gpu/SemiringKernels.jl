@@ -137,7 +137,9 @@ end
 end
 
 # ─── Host-Side Wrappers ─────────────────────────────────────────────────────
-# These dispatch to GPU via KernelAbstractions backend, or fall back to CPU.
+# Kernels above use KernelAbstractions @kernel — vendor-neutral.
+# Default backend=CPU() for testing. Pass backend=CUDABackend() or
+# MetalBackend() etc. for real GPU dispatch. No code change needed.
 
 """
     gpu_semiring_spmv(sr, rowptr, colval, nzval, x; backend=CPU())
