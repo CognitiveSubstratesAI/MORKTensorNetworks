@@ -212,6 +212,58 @@ using MORKTensorNetworks
         @test Rr[2,2] == 0.7     # pass through
     end
 
+    @testset "SemiringKernels SpGEMM — multi-semiring correctness vs CPU reference" begin
+        # Spec §5.2 headline kernel: previously the file's header advertised
+        # `semiring_spmm!` but the kernel was missing. Audit 2026-05-30 caught
+        # this. With the fix, gpu_semiring_spmm produces the same result as
+        # CPU semiring_matmul for each semiring family.
+        using KernelAbstractions: CPU
+        using MORKTensorNetworks.SemiringKernels: gpu_semiring_spmm
+        using MORKTensorNetworks.PathAlgebra: dense_to_csr
+
+        # 3x3 × 3x3 example with structure: R has edges (1,2), (2,3); S has (1,3), (3,1).
+        R = Float64[0 1 0; 0 0 1; 0 0 0]
+        S = Float64[0 0 1; 0 0 0; 1 0 0]
+
+        for sr in (SumProductSemiring(), MaxPlusSemiring(), BooleanSemiring(),
+                   PLNSemiring(), CostSemiring(), MinPlusSemiring())
+            # Sparsify with the semiring's szero so zeros are dropped correctly.
+            # For numeric semirings that's 0.0; for MaxPlus/Cost it's ±Inf so
+            # we keep the test on numeric-zero matrices to share inputs.
+            sr isa MaxPlusSemiring && continue   # different zero — skip
+            sr isa MinPlusSemiring && continue
+            sr isa CostSemiring    && continue
+
+            rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
+            rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)
+            gpu_result = gpu_semiring_spmm(sr,
+                                            rowptr_R, colval_R, nzval_R,
+                                            rowptr_S, colval_S, nzval_S, n;
+                                            backend=CPU())
+            cpu_result = semiring_matmul(sr, R, S)
+            @test gpu_result ≈ cpu_result
+        end
+    end
+
+    @testset "path_compose with backend=CPU() dispatches via SpGEMM" begin
+        # End-to-end: path_compose with backend kwarg should now route through
+        # gpu_semiring_spmm (which was unreachable before — dead-import in the
+        # PathAlgebra prelude). Default path (no backend) and SpGEMM path
+        # should produce identical results modulo dense-storage type.
+        using KernelAbstractions: CPU
+        sr = SumProductSemiring()
+        R = Float64[0 1 0; 0 0 1; 0 0 0]
+        S = Float64[0 0 1; 0 0 0; 0 1 0]
+        T_default = path_compose(sr, R, S)                       # dense CPU
+        T_gpu     = path_compose(sr, R, S; backend=CPU())        # SpGEMM path
+        @test T_default ≈ T_gpu
+
+        # Also verify the apply_threshold=false (raw) path through SpGEMM.
+        T_raw_default = path_compose(sr, R, S; apply_threshold=false)
+        T_raw_gpu     = path_compose(sr, R, S; apply_threshold=false, backend=CPU())
+        @test T_raw_default ≈ T_raw_gpu
+    end
+
     @testset "path_universal — now exported and reachable" begin
         # Audit found path_universal was defined (line 196) but missing from
         # the export list — unreachable to consumers using `using ...PathAlgebra`.

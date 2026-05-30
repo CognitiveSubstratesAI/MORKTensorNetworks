@@ -22,10 +22,12 @@ using KernelAbstractions
 using KernelAbstractions: @kernel, @index
 using ..Semirings
 
-export semiring_spmv_kernel!, semiring_reduce_kernel!,
+export semiring_spmv_kernel!, semiring_spmm_kernel!,
+       semiring_reduce_kernel!,
        elementwise_mask_kernel!, threshold_kernel!,
-       gpu_semiring_spmv, gpu_semiring_reduce,
-       gpu_elementwise_mask, gpu_threshold
+       gpu_semiring_spmv, gpu_semiring_spmm, gpu_semiring_reduce,
+       gpu_elementwise_mask, gpu_threshold,
+       semiring_tag
 
 # ─── Kernel 1: Sparse Matrix-Vector (SpMV) ──────────────────────────────────
 # y[i] = ⊕_j (A[i,j] ⊗ x[j])  for nonzero entries only
@@ -96,6 +98,48 @@ semiring_tag(::BooleanSemiring)    = Int32(4)
 semiring_tag(::PLNSemiring)        = Int32(5)
 semiring_tag(::CostSemiring)       = Int32(6)
 
+# ─── Kernel 1b: Sparse Matrix-Matrix (SpGEMM) ───────────────────────────────
+# C[i, j] = ⊕_k (A[i, k] ⊗ B[k, j])   for nonzero entries only
+#
+# Inputs:
+#   A in CSR: rowptr_A (length m+1), colval_A, nzval_A
+#   B in CSR: rowptr_B (length k+1), colval_B, nzval_B
+#   Output: dense matrix C (m × n) — caller pre-allocates and fills with szero(sr)
+#
+# Algorithm: one thread per row of A. Each thread walks A[i, *] nonzeros,
+# then for each such (k, a_ik), walks B[k, *] nonzeros, accumulating into
+# the dense output row C[i, j]. Output is dense to avoid the classical
+# SpGEMM symbolic phase (which is hard to GPU well). For C sparsity above
+# ~10%, this is competitive; below that a sparse-output variant would win.
+#
+# This is the headline §5.2 kernel — the spec's "sparse einsums (SpGEMM-like)
+# with semirings" promise — previously missing from this file (audit 2026-05-30).
+# Used by PathAlgebra.path_compose to lower `T = H(R ⊗ S)` to GPU.
+
+@kernel function semiring_spmm_kernel!(C,                 # dense output (m × n)
+                                        rowptr_A, colval_A, nzval_A,
+                                        rowptr_B, colval_B, nzval_B,
+                                        @Const(n_cols),   # n: columns of B (= cols of C)
+                                        @Const(sr_zero),
+                                        @Const(sr_type))
+    i = @index(Global, Linear)
+    row_a_start = rowptr_A[i]
+    row_a_end   = rowptr_A[i + 1] - 1
+    for ka in row_a_start:row_a_end
+        k_idx = colval_A[ka]
+        a_ik  = nzval_A[ka]
+        row_b_start = rowptr_B[k_idx]
+        row_b_end   = rowptr_B[k_idx + 1] - 1
+        for kb in row_b_start:row_b_end
+            j     = colval_B[kb]
+            b_kj  = nzval_B[kb]
+            prod  = _sr_otimes(sr_type, a_ik, b_kj)
+            old   = @inbounds C[i, j]
+            @inbounds C[i, j] = _sr_oplus(sr_type, old, prod)
+        end
+    end
+end
+
 # ─── Kernel 2: Reduction ────────────────────────────────────────────────────
 # result = v[1] ⊕ v[2] ⊕ ... ⊕ v[n]
 # Simple per-block reduction; for production use tree reduction.
@@ -161,6 +205,43 @@ function gpu_semiring_spmv(sr::AbstractSemiring, rowptr, colval, nzval, x;
     kernel(y, rowptr, colval, nzval, x, z, tag; ndrange=m)
     KernelAbstractions.synchronize(backend)
     return y
+end
+
+"""
+    gpu_semiring_spmm(sr, rowptr_A, colval_A, nzval_A,
+                          rowptr_B, colval_B, nzval_B, n_cols;
+                       backend=CPU()) → Matrix
+
+Sparse-by-sparse matrix multiply (SpGEMM) under semiring `sr`. Both A and B
+are in CSR form. Output is a dense (m × n_cols) matrix, with entries
+initialized to `szero(sr)` and accumulated via `_sr_oplus`/`_sr_otimes`.
+
+This is the spec §5.2 "sparse einsums (SpGEMM-like) parameterized by
+semiring" kernel — required to lower `path_compose` to GPU per spec §3
+row 1 formula `T[x,z] = H(Σ_y R[x,y] ⊗ S[y,z])`.
+
+Backend-neutral via KernelAbstractions; pass `backend=CUDABackend()` etc.
+for real GPU dispatch.
+"""
+function gpu_semiring_spmm(sr::AbstractSemiring,
+                            rowptr_A, colval_A, nzval_A,
+                            rowptr_B, colval_B, nzval_B,
+                            n_cols::Integer;
+                            backend=KernelAbstractions.CPU())
+    m = length(rowptr_A) - 1
+    T = eltype(nzval_A)
+    C = KernelAbstractions.zeros(backend, T, m, n_cols)
+    fill!(C, T(szero(sr)))
+
+    tag = semiring_tag(sr)
+    z   = T(szero(sr))
+
+    kernel = semiring_spmm_kernel!(backend, 256)
+    kernel(C, rowptr_A, colval_A, nzval_A,
+              rowptr_B, colval_B, nzval_B,
+              Int(n_cols), z, tag; ndrange=m)
+    KernelAbstractions.synchronize(backend)
+    return C
 end
 
 """

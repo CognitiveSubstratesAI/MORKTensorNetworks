@@ -16,7 +16,9 @@ Operations:
 module PathAlgebra
 
 using ..Semirings
-using ..SemiringKernels: gpu_semiring_spmv, gpu_elementwise_mask, gpu_threshold, gpu_semiring_reduce
+using ..SemiringKernels: gpu_semiring_spmv, gpu_semiring_spmm,
+                         gpu_elementwise_mask, gpu_threshold, gpu_semiring_reduce
+using KernelAbstractions: CPU
 
 export path_compose, path_union, path_intersect,
        path_restrict, path_project, path_transpose,
@@ -61,7 +63,7 @@ end
 # This is semiring matrix multiply.
 
 """
-    path_compose(sr, R, S; apply_threshold::Bool=true) → C
+    path_compose(sr, R, S; apply_threshold::Bool=true, backend=nothing) → C
 
 Compose relations R and S per spec §3 table:
     T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])
@@ -71,12 +73,29 @@ else szero(sr). Default applies H per spec; pass `apply_threshold=false` for
 raw semiring matmul (use case: path counting under SumProduct, Viterbi scoring
 under MaxPlus — both want the raw weighted sum, not the Heaviside projection).
 
+When `backend !== nothing`, lowers the matmul through `gpu_semiring_spmm`
+(the spec §5.2 SpGEMM kernel) which goes via CSR + KernelAbstractions.
+Pass `backend=CPU()` for the GPU-shaped path on host, or e.g.
+`backend=CUDABackend()` for real GPU dispatch. When `backend===nothing` (default),
+uses the dense CPU `semiring_matmul` reference.
+
 Previously the H wrapper was silently dropped, so `path_compose` under
 SumProduct returned a path-count matrix instead of a {0,1} reachability matrix.
+And the GPU path was unreachable because `gpu_semiring_spmm` did not exist.
 """
 function path_compose(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
-                       apply_threshold::Bool=true)
-    raw = semiring_matmul(sr, R, S)
+                       apply_threshold::Bool=true,
+                       backend=nothing)
+    raw = if backend === nothing
+        semiring_matmul(sr, R, S)
+    else
+        # Convert dense → CSR, run SpGEMM, return dense output matrix.
+        rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
+        rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)
+        gpu_semiring_spmm(sr, rowptr_R, colval_R, nzval_R,
+                              rowptr_S, colval_S, nzval_S, n;
+                          backend=backend)
+    end
     apply_threshold ? _heaviside(sr, raw) : raw
 end
 
