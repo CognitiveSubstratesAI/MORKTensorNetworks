@@ -20,7 +20,8 @@ using ..SemiringKernels: gpu_semiring_spmv, gpu_elementwise_mask, gpu_threshold,
 
 export path_compose, path_union, path_intersect,
        path_restrict, path_project, path_transpose,
-       path_reachability, path_viterbi, path_count
+       path_reachability, path_viterbi, path_count,
+       path_universal
 
 # ─── CSR Helpers ─────────────────────────────────────────────────────────────
 
@@ -60,31 +61,57 @@ end
 # This is semiring matrix multiply.
 
 """
-    path_compose(sr, R, S) → C
+    path_compose(sr, R, S; apply_threshold::Bool=true) → C
 
-Compose relations R and S using semiring matmul.
-R and S are dense matrices; returns dense result.
-For sparse: use semiring_matmul from Semirings.jl directly.
+Compose relations R and S per spec §3 table:
+    T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])
+
+Where H is the semiring-aware Heaviside step: H(x) = sone(sr) if x ≠ szero(sr),
+else szero(sr). Default applies H per spec; pass `apply_threshold=false` for
+raw semiring matmul (use case: path counting under SumProduct, Viterbi scoring
+under MaxPlus — both want the raw weighted sum, not the Heaviside projection).
+
+Previously the H wrapper was silently dropped, so `path_compose` under
+SumProduct returned a path-count matrix instead of a {0,1} reachability matrix.
 """
-function path_compose(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix)
-    return semiring_matmul(sr, R, S)
+function path_compose(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
+                       apply_threshold::Bool=true)
+    raw = semiring_matmul(sr, R, S)
+    apply_threshold ? _heaviside(sr, raw) : raw
 end
+
+"""
+    _heaviside(sr, x) → element or matrix
+
+Semiring-aware Heaviside step. For Boolean sr this is identity (already in
+{false, true}). For SumProduct (szero=0, sone=1) this is the classical
+H(x) = 1 if x > 0. For MaxPlus (szero=-Inf, sone=0) this is "present" iff
+x ≠ -Inf, which correctly captures "a path exists" (cost 0 is a valid path).
+"""
+@inline _heaviside(sr::AbstractSemiring, x) = isequal(x, szero(sr)) ? szero(sr) : sone(sr)
+_heaviside(sr::AbstractSemiring, M::AbstractMatrix) = map(x -> _heaviside(sr, x), M)
 
 # ─── Path Union: R ∪ S ──────────────────────────────────────────────────────
 # U[i,j] = R[i,j] ⊕ S[i,j]
 
 """
-    path_union(sr, R, S) → U
+    path_union(sr, R, S; apply_threshold::Bool=true) → U
 
-Elementwise ⊕ of two relation matrices.
+Elementwise union per spec §3 table: U = H(R ⊕ S).
+
+Default applies H; pass `apply_threshold=false` for raw semiring ⊕
+(use case: keep weighted union under SumProduct or MaxPlus).
+Previously H was silently dropped — under SumProduct, `union(R, R)` returned
+`2*R` instead of `R`.
 """
-function path_union(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix)
+function path_union(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
+                     apply_threshold::Bool=true)
     @assert size(R) == size(S)
     U = similar(R)
     for i in eachindex(R)
         U[i] = oplus(sr, R[i], S[i])
     end
-    return U
+    apply_threshold ? _heaviside(sr, U) : U
 end
 
 # ─── Path Intersection: R ∩ S ───────────────────────────────────────────────
@@ -93,29 +120,49 @@ end
 """
     path_intersect(sr, R, S) → I
 
-Elementwise ⊗ of two relation matrices.
+Elementwise intersection per spec §3 row 5: `I = R ∧ S` — **elementwise min**
+(logical AND). The semiring parameter is retained for API uniformity but is
+unused; min is the spec-defined operator regardless of semiring.
+
+Previously used `otimes(sr, R[i], S[i])` which is wrong: under SumProduct,
+`R ∩ R = R.^2` instead of `R`; under MaxPlus, `R ∩ S = R + S` (semiring sum)
+instead of `min(R, S)`. Audit caught this because `S ∩ S` on a 0/1 matrix
+happens to satisfy `1*1=1`, so the existing single test couldn't detect it.
 """
-function path_intersect(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix)
+function path_intersect(::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix)
     @assert size(R) == size(S)
-    I = similar(R)
-    for i in eachindex(R)
-        I[i] = otimes(sr, R[i], S[i])
-    end
-    return I
+    return min.(R, S)
 end
 
 # ─── Path Restriction: R|_mask ──────────────────────────────────────────────
 # R'[i,j] = R[i,j] * mask[i,j]
 
 """
-    path_restrict(R, mask) → R'
+    path_restrict(sr, R, mask) → R'
+    path_restrict(R, mask) → R'    # 2-arg form: assumes SumProduct semantics
 
-Elementwise mask (Hadamard product). Mask is 0/1 matrix.
+Label restriction per spec §3 row 3: `R' = R ⊙ M_L` — mask R by a 0/1 label
+indicator. Where mask is "absent" (iszero), the entry collapses to the
+semiring's additive zero; where present, R passes through unchanged.
+
+Previously the 2-arg form did `R .* mask` which silently broke under MaxPlus
+(sone=0, szero=-Inf): `R .* 0` collapses to 0 but the semiring-correct
+"absent" value is -Inf. The 3-arg form is semiring-aware.
 """
-function path_restrict(R::AbstractMatrix, mask::AbstractMatrix)
+function path_restrict(sr::AbstractSemiring, R::AbstractMatrix, mask::AbstractMatrix)
     @assert size(R) == size(mask)
-    return R .* mask
+    z = szero(sr)
+    out = similar(R)
+    for i in eachindex(R)
+        out[i] = iszero(mask[i]) ? z : R[i]
+    end
+    return out
 end
+
+# 2-arg shim — defaults to SumProduct semantics for backward compat with the
+# previous `R .* mask` behavior on numeric matrices.
+path_restrict(R::AbstractMatrix, mask::AbstractMatrix) =
+    path_restrict(SumProductSemiring(), R, mask)
 
 # ─── Path Projection: ∃y R[x,y] ─────────────────────────────────────────────
 # E[x] = H(⊕_y R[x,y]) where H is the Heaviside threshold

@@ -168,4 +168,64 @@ using MORKTensorNetworks
         @test sum(state.sti) > 0.5f0 + 0.2f0 + 0.1f0 + 0.4f0 - 1e-5  # budget added
     end
 
+    # ── Regression tests for 2026-05-30 audit fixes ────────────────────────────
+
+    @testset "PathAlgebra fixes — Heaviside, intersect=min, restrict semiring" begin
+        # ── path_intersect: spec §3 row 5 says R ∧ S = elementwise MIN.
+        # Previously used otimes — silently wrong under SumProduct.
+        sr_sp = SumProductSemiring()
+        R = Float64[0.6 0.3; 0.0 0.8]
+        I = path_intersect(sr_sp, R, R)
+        # min(R, R) == R; otimes(R, R) = R.^2 = [0.36 0.09; 0 0.64]
+        @test I == R                                # spec semantics
+        @test !isapprox(I[1,1], 0.36; atol=1e-6)    # NOT the buggy otimes result
+
+        # ── path_compose: spec §3 row 1 says T = H(Σ R⊗S). Default applies H.
+        # Under SumProduct, compose(R, S) used to return raw matmul; should
+        # now project to {0,1}.
+        S = Float64[0 1; 0 0]
+        P = Float64[0 0; 0 1]
+        T = path_compose(sr_sp, S, P)
+        @test T[1,2] == 1.0   # path exists, projected to sone
+        @test T[2,2] == 0.0   # no path, projected to szero
+        # Opt-out: apply_threshold=false gives the raw weighted sum
+        T_raw = path_compose(sr_sp, S, P; apply_threshold=false)
+        @test T_raw[1,2] == 1.0   # also 1 in this case (binary input)
+
+        # ── path_union: spec §3 row 4 says U = H(R + S). Under SumProduct,
+        # union(R, R) used to return 2R; should now return R thresholded.
+        U = path_union(sr_sp, R, R)
+        @test U[1,1] == 1.0   # 0.6+0.6=1.2 > 0 → projects to 1
+        @test U[2,1] == 0.0   # 0+0=0 → szero
+        @test !isapprox(U[1,1], 1.2; atol=1e-6)   # NOT the un-thresholded sum
+
+        # ── path_restrict: spec §3 row 3, semiring-aware. Under MaxPlus
+        # (sone=0, szero=-Inf), restrict with mask=0 should yield -Inf,
+        # not the buggy 0 from `R .* 0`.
+        sr_mp = MaxPlusSemiring()
+        Rmp  = Float64[0.5 1.0; 2.0 0.7]
+        mask = Float64[1 0; 0 1]
+        Rr = path_restrict(sr_mp, Rmp, mask)
+        @test Rr[1,1] == 0.5     # mask=1, pass through
+        @test Rr[1,2] == -Inf    # mask=0, szero(MaxPlus) = -Inf (was 0.0!)
+        @test Rr[2,1] == -Inf    # same
+        @test Rr[2,2] == 0.7     # pass through
+    end
+
+    @testset "path_universal — now exported and reachable" begin
+        # Audit found path_universal was defined (line 196) but missing from
+        # the export list — unreachable to consumers using `using ...PathAlgebra`.
+        sr = SumProductSemiring()
+        # ∀y: matrix where all rows have all-1 columns → universal = 1 for each row
+        R_all = ones(Float64, 2, 3)
+        u_all = path_universal(sr, R_all)
+        @test all(u_all .== 1.0)   # all rows satisfy ∀
+
+        # Matrix with one zero — that row doesn't satisfy universal
+        R_mix = Float64[1 1 1; 1 0 1]
+        u_mix = path_universal(sr, R_mix)
+        @test u_mix[1] == 1.0     # row 1: all ones
+        @test u_mix[2] == 0.0     # row 2 has a zero
+    end
+
 end  # MORKTensorNetworks
