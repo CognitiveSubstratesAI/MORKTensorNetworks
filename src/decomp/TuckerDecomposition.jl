@@ -234,4 +234,89 @@ function _ttm(A::AbstractArray{T}, M::AbstractMatrix, mode::Int) where T
     permutedims(reshape(Br, reshape_d...), iperm)
 end
 
+# ─── N-mode Tucker (generalization of the 2-mode + 3-mode entry points) ──────
+
+"""
+    tucker_decompose_nd(A, ranks; max_iter=50, tol=1e-6) → (C, factors, err)
+
+N-mode Tucker decomposition (HOOI) generalizing `tucker_decompose_2d` /
+`tucker_decompose_3d`. `ranks` is a tuple/vector of length `ndims(A)`; entry
+k caps the rank along mode k. Returns the core tensor `C`, a vector of
+factor matrices `factors[k]` (one per mode), and the relative reconstruction
+error.
+
+`A_ijk... ≈ Σ_{p,q,r,...} C[p,q,r,...] · factors[1][i,p] · factors[2][j,q] · ...`
+
+The helpers `_unfold` / `_ttm` / `_mode_unfold_svd` are already mode-generic;
+this entry point is the loop that updates each factor in turn (HOOI step)
+and re-checks reconstruction error for the convergence test.
+
+Use case (spec §5.4): ShardZipper compute kernels needing to densify
+irregular-sparsity tensors of rank > 3 (e.g., the HRT pyramid's per-level
+4-mode (resolution, token, head, channel) attention tensor).
+"""
+function tucker_decompose_nd(A::AbstractArray{T,N},
+                              ranks::Union{Tuple, AbstractVector{<:Integer}};
+                              max_iter::Int=50, tol::Float64=1e-6) where {T,N}
+    length(ranks) == N ||
+        error("tucker_decompose_nd: ranks length $(length(ranks)) ≠ tensor ndims $N")
+
+    capped_ranks = [min(ranks[k], size(A, k)) for k in 1:N]
+
+    # Initialize each factor via mode-k unfolding SVD.
+    factors = Matrix{Float32}[
+        _mode_unfold_svd(A, k, capped_ranks[k]) for k in 1:N
+    ]
+
+    prev_err = Inf64
+    for _ in 1:max_iter
+        # HOOI: for each mode, contract A with all OTHER factors' transposes,
+        # then take the top-rank-k left singular vectors as the new factor.
+        for mode in 1:N
+            G = A
+            for k in 1:N
+                k == mode && continue
+                G = _ttm(G, factors[k]', k)
+            end
+            factors[mode] = _mode_unfold_svd(G, mode, capped_ranks[mode])
+        end
+
+        # Core tensor C = A ×₁ factors[1]' ×₂ factors[2]' ... ×_N factors[N]'
+        C = A
+        for k in 1:N
+            C = _ttm(C, factors[k]', k)
+        end
+
+        A_recon = tucker_reconstruct_nd(C, factors)
+        err = norm(A - A_recon) / max(norm(A), 1e-10)
+        abs(prev_err - err) < tol && break
+        prev_err = err
+    end
+
+    # Final core + error after convergence.
+    C = A
+    for k in 1:N
+        C = _ttm(C, factors[k]', k)
+    end
+    A_recon = tucker_reconstruct_nd(C, factors)
+    err = norm(A - A_recon) / max(norm(A), 1e-10)
+    return (C, factors, Float64(err))
+end
+
+"""
+    tucker_reconstruct_nd(C, factors) → Array
+
+Reconstruct an N-mode tensor from its Tucker factors. Mirror of
+`tucker_reconstruct_3d` generalized to arbitrary mode count.
+"""
+function tucker_reconstruct_nd(C::AbstractArray, factors::AbstractVector{<:AbstractMatrix})
+    A = C
+    for k in 1:length(factors)
+        A = _ttm(A, factors[k], k)
+    end
+    A
+end
+
+export tucker_decompose_nd, tucker_reconstruct_nd
+
 end # module

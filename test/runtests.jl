@@ -264,6 +264,68 @@ using MORKTensorNetworks
         @test T_raw_default ≈ T_raw_gpu
     end
 
+    @testset "Tucker — N-mode generalization" begin
+        # Audit gap: tucker_decompose_* only had 2-mode and 3-mode entry
+        # points. Helpers were already N-mode generic (_unfold, _ttm,
+        # _mode_unfold_svd). New `tucker_decompose_nd` covers arbitrary
+        # rank — verified on a 4-mode tensor here.
+        # Use a low-rank fixture so the relative error stays small.
+        A4 = Float32[i + 2j + 3k + 4l
+                     for i in 1:5, j in 1:4, k in 1:3, l in 1:3]
+        ranks = (3, 3, 2, 2)
+        C, factors, err = tucker_decompose_nd(A4, ranks)
+        # Core tensor matches the rank tuple
+        @test size(C) == ranks
+        # 4 factor matrices, one per mode, each of size (mode_dim, rank_k)
+        @test length(factors) == 4
+        for k in 1:4
+            @test size(factors[k]) == (size(A4, k), ranks[k])
+        end
+        # Linear+low-rank fixture should reconstruct well
+        @test err < 0.1
+
+        # Round-trip via tucker_reconstruct_nd
+        A_recon = tucker_reconstruct_nd(C, factors)
+        @test size(A_recon) == size(A4)
+
+        # 2-mode case via the nd path matches the existing 2d entry point
+        # in shape (we don't compare numeric values because SVD signs differ;
+        # we just verify the API stitches together).
+        A2 = Float32.(randn(6, 6))
+        C2, F2, _ = tucker_decompose_nd(A2, (3, 3))
+        @test size(C2) == (3, 3)
+        @test length(F2) == 2
+
+        # Mismatched ranks tuple → error
+        @test_throws ErrorException tucker_decompose_nd(A4, (3, 3, 2))   # only 3
+    end
+
+    @testset "gpu_semiring_reduce — tree-parallel pairwise" begin
+        # Audit gap: the previous reduce kernel had `if i == 1; serial loop`
+        # — single-threaded inside a "parallel" launch. Replaced with the
+        # pairwise pattern (one halving pass per launch). Verify correctness
+        # across a few semirings and a few sizes including odd lengths.
+        using KernelAbstractions: CPU
+        using MORKTensorNetworks.SemiringKernels: gpu_semiring_reduce
+        for (sr, op) in (
+                (SumProductSemiring(), +),
+                (MaxPlusSemiring(),    max),
+                (MinPlusSemiring(),    min),
+            )
+            # Length 1 → identity
+            @test gpu_semiring_reduce(sr, [3.0f0]; backend=CPU()) == 3.0f0
+            # Length 8 (power of 2)
+            v8 = Float32[1, 2, 3, 4, 5, 6, 7, 8]
+            @test gpu_semiring_reduce(sr, v8; backend=CPU()) ≈ reduce(op, v8)
+            # Length 7 (odd — must handle the trailing-one case via szero)
+            v7 = Float32[1, 2, 3, 4, 5, 6, 7]
+            @test gpu_semiring_reduce(sr, v7; backend=CPU()) ≈ reduce(op, v7)
+            # Length 13 (odd, doesn't halve cleanly)
+            v13 = Float32[i for i in 1:13]
+            @test gpu_semiring_reduce(sr, v13; backend=CPU()) ≈ reduce(op, v13)
+        end
+    end
+
     @testset "path_universal — now exported and reachable" begin
         # Audit found path_universal was defined (line 196) but missing from
         # the export list — unreachable to consumers using `using ...PathAlgebra`.

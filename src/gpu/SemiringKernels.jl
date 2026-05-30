@@ -145,9 +145,11 @@ end
 # Simple per-block reduction; for production use tree reduction.
 
 @kernel function semiring_reduce_kernel!(output, input, @Const(sr_zero), @Const(sr_type))
-    # Single-thread reduction — correct for any vector size.
-    # For vectors > 10k elements, a tree-based parallel reduction
-    # (e.g., 2-pass block reduce) would be faster on GPU.
+    # Legacy single-thread fallback — correct for any vector size, but
+    # not actually parallel. Kept for backward compat with callers that
+    # depended on the original ndrange=1 semantics. New code should use
+    # `gpu_semiring_reduce` which dispatches via the tree-parallel kernel
+    # below (semiring_pairwise_reduce_kernel!).
     i = @index(Global, Linear)
     if i == 1
         acc = sr_zero
@@ -155,6 +157,24 @@ end
             acc = _sr_oplus(sr_type, acc, input[j])
         end
         output[1] = acc
+    end
+end
+
+# Tree-parallel pairwise reduction: each thread i collapses input[2i-1] and
+# input[2i] (or sr_zero when 2i exceeds the remaining range) into output[i].
+# Repeated log2(n) times, halving the active range each pass — yields the
+# full ⊕-reduce. Replaces the "single thread does everything" hack the audit
+# flagged as the major perf gap in §5.2 promise 2 (fused reductions).
+@kernel function semiring_pairwise_reduce_kernel!(output, input,
+                                                   @Const(n),
+                                                   @Const(sr_zero),
+                                                   @Const(sr_type))
+    i = @index(Global, Linear)
+    # active threads cover positions 1..ceil(n/2)
+    if 2 * i - 1 <= n
+        a = @inbounds input[2 * i - 1]
+        b = (2 * i <= n) ? @inbounds(input[2 * i]) : sr_zero
+        @inbounds output[i] = _sr_oplus(sr_type, a, b)
     end
 end
 
@@ -245,23 +265,46 @@ function gpu_semiring_spmm(sr::AbstractSemiring,
 end
 
 """
-    gpu_semiring_reduce(sr, v; backend=CPU())
+    gpu_semiring_reduce(sr, v; backend=CPU()) → scalar
 
-⊕-reduction of vector v using semiring sr.
+⊕-reduction of vector `v` under semiring `sr`. Uses the tree-parallel
+pairwise kernel: at each pass, thread `i` collapses two adjacent elements
+into one output slot, halving the active range. Repeated `log₂(n)` times
+yields the full reduction in O(log n) sequential steps (vs O(n) for the
+old single-thread loop). Ping-pongs between two scratch buffers to avoid
+in-place hazards.
+
+Use `gpu_semiring_reduce(sr, v)` for the standard CPU dispatch; pass
+`backend=CUDABackend()` etc. for real GPU.
 """
 function gpu_semiring_reduce(sr::AbstractSemiring, v;
                              backend=KernelAbstractions.CPU())
     T = eltype(v)
-    output = KernelAbstractions.zeros(backend, T, 1)
-    fill!(output, T(szero(sr)))
+    n = length(v)
+    n == 0 && return T(szero(sr))
+    n == 1 && return T(v[1])
 
-    tag = semiring_tag(sr)
-    z = T(szero(sr))
+    # Two ping-pong buffers sized n. We copy input → src, then alternate
+    # writes between dst and src as the active range halves.
+    src = KernelAbstractions.zeros(backend, T, n)
+    dst = KernelAbstractions.zeros(backend, T, n)
+    copyto!(src, v)
+    fill!(dst, T(szero(sr)))
 
-    kernel = semiring_reduce_kernel!(backend, 1)
-    kernel(output, v, z, tag; ndrange=1)
-    KernelAbstractions.synchronize(backend)
-    return output[1]
+    tag       = semiring_tag(sr)
+    z         = T(szero(sr))
+    remaining = n
+    kernel    = semiring_pairwise_reduce_kernel!(backend, 256)
+
+    while remaining > 1
+        half = cld(remaining, 2)
+        kernel(dst, src, remaining, z, tag; ndrange=half)
+        KernelAbstractions.synchronize(backend)
+        src, dst = dst, src
+        remaining = half
+    end
+
+    return src[1]
 end
 
 """

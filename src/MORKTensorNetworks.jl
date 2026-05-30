@@ -62,6 +62,7 @@ export path_project, path_reachability, path_viterbi, path_count, path_universal
 # TuckerDecomposition
 export tucker_decompose_2d, tucker_reconstruct_2d, should_densify
 export tucker_decompose_3d, tucker_reconstruct_3d
+export tucker_decompose_nd, tucker_reconstruct_nd
 export BCSRMatrix, dense_to_bcsr, bcsr_to_dense
 export ECANState, ecan_sti_spread!, ecan_hebbian_update!
 export ecan_collect_rent!, ecan_distribute_wages!
