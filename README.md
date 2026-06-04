@@ -177,7 +177,7 @@ HPC                   ← MPI peer-to-peer distributed spaces
 | SemiringKernels | §5.2 | ✅ | KernelAbstractions @kernel; real GPU dispatch via backend param |
 | GPULayout CSR | §5.1 | ✅ | Manual row-major CSR build (not Julia sparse() which is CSC) |
 | GPULayout BCSR | §5.1 | ✅ | Block CSR; zero-block dropping; exact round-trip |
-| ShardZipper (6 steps) | §2 | ✅ | Full-prefix node graph; manual CSR; all 6 steps correct |
+| ShardZipper (6 steps) | §2 | ⚠️ | `materialize!` decodes the symbolic relation (audit H3 fix); reattach is per-path writes, NOT the O(1) Λ_s graft (M2) |
 | CrossShardJoin — Halo | §5.6 | ✅ | Halo rows fetched from adjacent shards |
 | CrossShardJoin — Batched | §5.6 | ✅ | Two-pass: within then cross-shard |
 | CrossShardJoin — Reshard | §5.6 | ✅ | Merges adjacent shards on >20% cross-column overlap |
@@ -185,11 +185,19 @@ HPC                   ← MPI peer-to-peer distributed spaces
 | TuckerDecomposition 3D | §5.4 | ✅ | HOOI: A_ijk ≈ Σ C_pqr·M_ip·N_jq·P_kr |
 | HRT pyramid | §6 | ✅ | RTB (self-attn+FFN), down-project, cross-attn, gated fusion, recon loss |
 | PredictiveCodingTrainer | §6.4 | ✅ | Local Hebbian updates, no global backprop |
-| ECAN STI spreading | §7.3.1 | ✅ | (max,+) matmul: STI_new[x] = max_y(W[x,y]+STI[y]) |
-| ECAN Hebbian weights | §7.3.2 | ✅ | ΔW[x,y] = η·STI[x]·STI[y] |
-| ECAN attention fund | §7.3.3 | ✅ | Rent = max(0, STI−threshold)×rate; wage ∝ STI |
+| ECAN STI spreading | §7.3.1 | ⚠️ | (max,+) matmul; diverges from Core ECAN — no STI conservation (audit H6) |
+| ECAN Hebbian weights | §7.3.2 | ⚠️ | product rule ΔW=η·STI·STI; Core uses affine `hebbian-conjunction` (audit H6) |
+| ECAN attention fund | §7.3.3 | ⚠️ | single-tier STI rent; Core is two-tier WA+AF on STI+LTI, with VLTI (audit H6) |
 
-**49/49 tests pass.**
+**Tests: `Pkg.test` 116/116 (107 functional + 9 Aqua), warm-REPL 107/107.**
+(The earlier "49/49" claim was stale — see `docs/AUDIT_2026-06-04.md`.)
+
+## Audit & open items
+
+- **`docs/AUDIT_2026-06-04.md`** — full finding-by-finding audit closeout (hybrid: JET +
+  Aqua + spec-diff + external audit reconciliation).
+- **`docs/TODO.md`** — tracked open items. ⚠️ rows above are documented owner decisions
+  (package identity C4, ECAN-vs-Core H6, O(1) graft M2), not silent gaps.
 
 ## Source paper
 
