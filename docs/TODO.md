@@ -21,6 +21,21 @@ listed here. This file tracks what remains.
       the `wz_graft!`-based reattach (record a write-zipper continuation in `capture_shard`),
       or drop the O(1) claim from the §2 docstrings/README.
 
+## 🟠 Feature gaps vs the paper (from the deep paper-vs-code pass)
+
+- [ ] **N4 — PC local learning incomplete (§6.4).** Predictive-coding training updates
+      only `W_down` + `alpha`; `W_Q/W_K/W_V` (attention routing) and `W1/W2` (FFN) are
+      never updated, though §6.4 calls for "local Hebbian for Q/K/V and projection
+      matrices." Needs a defined local error signal for within-level weights (the paper's
+      "rough notes" don't specify one). Characterization test pins the current behaviour;
+      flip it when implemented. Don't fabricate a rule.
+- [ ] **N1 — Cost ≡ MinPlus.** `CostSemiring` is behaviourally identical to
+      `MinPlusSemiring`. Consolidate onto MinPlus, or give Q_cost genuinely distinct
+      semantics if Occam-complexity ordering needs them. (Public API — decide before removing.)
+- [ ] **N3 — real halo join.** `halo_boundary_join` computes the full dense join (correct
+      for in-memory `A`/`B`); a genuine halo (shards holding partial `A` + boundary slice)
+      is only meaningful once C4 goes "distributed kernel."
+
 ## 🟡 Conditional on the C4 decision (only if "PRIMUS kernel")
 
 - [ ] **C4** — sparse-output SpGEMM (`gpu_semiring_spmm` currently allocates a dense output).

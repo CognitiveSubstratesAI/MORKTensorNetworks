@@ -1,8 +1,9 @@
 """
     TuckerDecomposition.jl — Low-rank tensor densification for MORK
 
-MORK-Tensor-Networks paper §4: Tucker decomposition converts sparse
+MORK-Tensor-Networks paper §5.4: Tucker decomposition converts sparse
 relations into low-rank dense form for GPU-efficient dense einsums.
+(§4 is the mapping table; densification is §5.4.)
 
     A[i,j,k] ≈ Σ_{p,q,r} C[p,q,r] * M[i,p] * N[j,q] * P[k,r]
 

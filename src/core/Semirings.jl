@@ -106,6 +106,14 @@ struct MinPlusSemiring <: AbstractSemiring end
 @inline otimes(::MinPlusSemiring, a, b) = a + b
 
 # ─── PLN Semiring (max, *, 0, 1) — Q_PLN ────────────────────────────────────
+#
+# N1 (audit 2026-06-04): PLNSemiring and CostSemiring are PRIMUS EXTENSIONS beyond
+# the paper's §3.5, which defines exactly 4 semirings (Boolean, SumProduct, MaxPlus,
+# MinPlus). PLN (max, *) is a genuine distinct semiring (probabilistic-logic truth
+# ordering Q_PLN). CostSemiring below, however, is (min, +, Inf, 0) — BEHAVIOURALLY
+# IDENTICAL to MinPlusSemiring (its GPU tag 6 also dispatches min/+ like tag 3). It is
+# kept as a named alias for caller intent (Occam complexity Q_cost) but adds no new
+# algebra; consider consolidating onto MinPlus if the Q_cost naming isn't load-bearing.
 
 struct PLNSemiring <: AbstractSemiring end
 
@@ -190,11 +198,8 @@ function semiring_reduce(sr::AbstractSemiring, v::AbstractVector)
     return acc
 end
 
-"""
-    threshold(x, t=0) → Bool
-
-Heaviside threshold: H(x) = x > t. Used for existential quantification.
-"""
-@inline threshold(x, t=0) = x > t
+# N2 (audit 2026-06-04): removed dead `threshold(x, t=0) = x > t`. It was unexported,
+# called nowhere, and embodied the exact C2 bug (hardcoded `> 0` Heaviside that is wrong
+# for tropical semirings). The semiring-aware Heaviside lives in PathAlgebra._heaviside.
 
 end # module

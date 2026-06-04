@@ -138,14 +138,18 @@ end
 """
     halo_boundary_join(sr, A, B, shard_ranges, halo_width) → C
 
-§5.6 Halo strategy: each shard receives a read-only boundary slice of
-`halo_width` rows from adjacent shards. This avoids a second streaming pass.
+§5.6 Halo strategy (reference implementation over a single in-memory `A`/`B`).
 
-For each shard i with rows `r`:
-
-  - Extended rows = r extended by min(halo_width, gap) rows from adjacent shards
-  - Compute A[extended, :] × B → C_extended
-  - Write only owned rows back to C
+N3 note (audit 2026-06-04): the halo's purpose is to give a shard read access to a
+small boundary slice of *adjacent shards' rows* so each shard can finish its join
+WITHOUT a second streaming pass. In a genuinely distributed setting each shard holds
+only its owned rows + the halo. Here `A`/`B` are full in-memory matrices, so every
+owned row already has access to all of `A`/`B` — the join over owned rows is exact
+with no halo needed. This reference therefore computes `C[owned, :] = A[owned, :] ⊗ B`
+directly. (The earlier version computed `halo_start/halo_end/extended/ei` and never
+used them — dead variables removed.) `halo_width` is retained for API/strategy
+compatibility; it only matters once shards hold partial `A`, which is future work
+(see C4 package-identity decision — a distributed kernel would slice A by shard).
 """
 function halo_boundary_join(
     sr::AbstractSemiring, A::AbstractMatrix, B::AbstractMatrix,
@@ -155,15 +159,8 @@ function halo_boundary_join(
     _, n = size(B)
     C = fill(szero(sr), m, n)
 
-    for (s_idx, owned_rows) in enumerate(shard_ranges)
-        # Extend with halo from previous and next shards
-        halo_start = max(1, first(owned_rows) - halo_width)
-        halo_end = min(m, last(owned_rows) + halo_width)
-        extended = halo_start:halo_end
-
-        # Compute join over extended rows, write back only owned
+    for owned_rows in shard_ranges
         for i in owned_rows
-            ei = i - halo_start + 1  # index within extended block
             for j in 1:n
                 acc = szero(sr)
                 for p in 1:k

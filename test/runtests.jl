@@ -419,6 +419,37 @@ end
         @test state isa HRTState
     end
 
+    # N5 (audit 2026-06-04): PredictiveCodingTrainer (§6.4) had ZERO test coverage —
+    # which is why the M4 truncation and N4 gap went unnoticed. Add a smoke test +
+    # a CHARACTERIZATION of the N4 gap (PC learns W_down + alpha, NOT W_Q/W_K/W_V/FFN).
+    @testset "N5: PredictiveCodingTrainer §6.4 — smoke + N4 gap characterization" begin
+        cfg = HRTConfig(n_tokens=8, d_model=16, n_levels=2)
+        params = init_hrt(cfg)
+        state = init_state(cfg)
+        # Drive the activities away from prediction so surprise exceeds threshold.
+        state.R[2] .+= 1.0f0
+        pc = PCTrainerConfig(lr_weights=0.05f0, surprise_threshold=0.0f0)
+
+        W_down_before = copy(params.levels[1].W_down)
+        alpha_before = copy(params.levels[1].alpha)
+        W_Q_before = copy(params.levels[1].W_Q)
+        W1_before = copy(params.levels[1].W1)
+
+        surprise, delta = pc_train_step!(state, params, cfg, pc)
+        @test surprise >= 0.0f0
+        @test delta >= 0.0f0
+
+        # What PC DOES learn (M4 asserts pass = correct pyramid sizing):
+        @test params.levels[1].W_down != W_down_before   # down-projection updated
+        @test params.levels[1].alpha != alpha_before      # fusion gate updated
+
+        # N4 gap, pinned: attention + FFN weights are NOT updated under PC.
+        # If someone implements §6.4 Q/K/V/FFN local learning, these flip — update the
+        # docstring + docs/TODO.md when they do.
+        @test params.levels[1].W_Q == W_Q_before          # attention routing frozen (N4)
+        @test params.levels[1].W1 == W1_before            # FFN frozen (N4)
+    end
+
     @testset "path_universal — now exported and reachable" begin
         # Audit found path_universal was defined (line 196) but missing from
         # the export list — unreachable to consumers using `using ...PathAlgebra`.

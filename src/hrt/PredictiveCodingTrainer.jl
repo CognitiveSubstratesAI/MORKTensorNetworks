@@ -107,11 +107,11 @@ function pc_inner_loop!(
 
             # Only update if surprising enough
             if surprise > pc_cfg.surprise_threshold
-                # Activity update: R_{l+1} += lr * precision * error
-                m = min(size(state.R[l + 1], 1), size(error, 1))
-                d = min(size(state.R[l + 1], 2), size(error, 2))
-                state.R[l + 1][1:m, 1:d] .+=
-                    pc_cfg.lr_activity * pc_cfg.precision_weight .* error
+                # Activity update: R_{l+1} += lr * precision * error.
+                # M4 (audit 2026-06-04): prediction_error already asserted
+                # error matches the predicted/observed shape, so a direct `.+=`
+                # is correct and surfaces any mismatch (no silent min-truncation).
+                state.R[l + 1] .+= pc_cfg.lr_activity * pc_cfg.precision_weight .* error
             end
         end
     end
@@ -124,15 +124,21 @@ end
 """
     hebbian_update!(params, state, cfg, pc_cfg) → total_delta
 
-Local Hebbian weight updates based on prediction errors.
-Forward-only: W += η * error * R^T (outer product learning rule).
+Local Hebbian weight updates based on cross-level prediction errors.
+Forward-only: W_down += η · error · R_l^T (outer-product learning rule).
 
-Updates:
+ACTUALLY updates:
+  - W_down (down-projection): correlates the cross-level prediction error with the
+    finer-level activity → learns better compression.
+  - alpha (fusion gate): nudged up when surprise is high.
 
-  - W_down (down-projection): learns better compression
-  - W_Q, W_K, W_V (attention): learns better routing
-  - W1, W2 (FFN): learns better transformations
-  - alpha (fusion gate): learns optimal mixing ratio
+N4 GAP (audit 2026-06-04): §6.4 calls for "local Hebbian for Q/K/V and projection
+matrices", and this docstring previously claimed W_Q/W_K/W_V/W1/W2 were updated — they
+are NOT. The within-level attention/FFN weights have no cross-level prediction-error
+signal in this forward-prediction PC setup, and the paper (§6.4, "rough notes") does
+not specify the local rule for them. Implementing attention/FFN local learning needs a
+defined local error signal — tracked in docs/TODO.md, NOT fabricated here. As written,
+predictive-coding training learns only the down-projection + fusion gates.
 """
 function hebbian_update!(
     params::HRTParams, state::HRTState, cfg::HRTConfig, pc_cfg::PCTrainerConfig
@@ -153,21 +159,15 @@ function hebbian_update!(
             continue
         end
 
-        m = min(size(error, 1), size(state.R[l + 1], 1))
-        d = min(size(error, 2), size(state.R[l + 1], 2))
-
-        # --- Update W_down (down-projection) ---
-        # ΔW_down = η * error^T * R_l  (correlate error with input)
-        m_down = min(size(p.W_down, 1), m)
-        n_down = min(size(p.W_down, 2), size(state.R[l], 1))
-        if m_down > 0 && n_down > 0
-            delta_W = η * error[1:m_down, :] * state.R[l][1:n_down, :]'
-            # Truncate delta to match W_down dimensions
-            r = min(size(delta_W, 1), size(p.W_down, 1))
-            c = min(size(delta_W, 2), size(p.W_down, 2))
-            p.W_down[1:r, 1:c] .+= delta_W[1:r, 1:c]
-            total_delta += sum(abs.(delta_W[1:r, 1:c]))
-        end
+        # --- Update W_down (down-projection): ΔW_down = η · error · R_l^T ---
+        # error is (n_{l+1} × d), R_l is (n_l × d) → outer product (n_{l+1} × n_l),
+        # which equals W_down's shape under correct pyramid sizing (M5).
+        # M4 (audit 2026-06-04): replaced silent min-truncation with a shape assert
+        # so a sizing bug throws instead of being masked by a truncated update.
+        delta_W = η .* (error * state.R[l]')
+        @assert size(delta_W) == size(p.W_down) "hebbian_update!: ΔW_down $(size(delta_W)) ≠ W_down $(size(p.W_down)) — check HRT pyramid sizing."
+        p.W_down .+= delta_W
+        total_delta += sum(abs.(delta_W))
 
         # --- Update alpha (gated fusion) ---
         # Increase alpha (use more cross-attention) when surprise is high
