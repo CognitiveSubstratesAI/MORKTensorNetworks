@@ -46,7 +46,12 @@ struct CSRMatrix{T}
 end
 
 """
-Convert dense matrix to CSR.
+Convert dense matrix to CSR (returns (rowptr, colval, nzval, m, n) tuple).
+
+L8 note (audit 2026-06-04): a second `dense_to_csr` exists in PathAlgebra.jl with the
+same signature/return shape. They live in separate submodules (no name clash) but are
+duplicate logic. Consolidate onto one if a shared CSR utility module is introduced;
+left separate here to avoid cross-module coupling for a hygiene-only change.
 """
 function dense_to_csr(A::AbstractMatrix{T}) where {T}
     m, n = size(A)
@@ -235,8 +240,14 @@ function analyze_layout(A::AbstractMatrix)
                 r = findfirst(>=(0.9), cum)
                 effective_rank = r === nothing ? length(sv) : r
             end
-        catch
-            # SVD failed — assume full rank
+        catch e
+            # M6 fix (audit 2026-06-04): don't silently swallow SVD failure — a
+            # low-rank matrix whose SVD throws would be misrouted to DenseDirect,
+            # killing the Tucker densification win. Surface it; then fall back to
+            # full-rank as the conservative default.
+            @warn "analyze_layout: svdvals failed; assuming full rank (Tucker route disabled for this matrix)" exception = (
+                e, catch_backtrace()
+            )
         end
     end
 

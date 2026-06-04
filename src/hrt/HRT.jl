@@ -56,6 +56,12 @@ function HRTConfig(;
     n_tokens=256, d_model=64, n_levels=4, n_heads=4, ffn_mult=4, dropout=0.0,
     recon_weight=0.1
 )
+    # M5 fix (audit 2026-06-04): level sizing uses n_l = n_tokens ÷ 2^(l-1). For
+    # non-power-of-two n_tokens, integer division makes adjacent-level sizes diverge,
+    # so W_down's row count can mismatch the next level — previously silently truncated
+    # (M4) into plausible-but-wrong numerics. Require a clean power-of-two pyramid.
+    @assert ispow2(n_tokens) "HRTConfig: n_tokens=$n_tokens must be a power of 2 so the ÷2 pyramid has consistent level sizes."
+    @assert n_tokens >= 2^(n_levels - 1) "HRTConfig: n_tokens=$n_tokens must be ≥ 2^(n_levels-1)=$(2^(n_levels - 1)) so the coarsest level has ≥ 1 token."
     HRTConfig(n_tokens, d_model, n_levels, n_heads, ffn_mult, dropout, recon_weight)
 end
 
@@ -140,7 +146,7 @@ function init_hrt(cfg::HRTConfig)
             randn(Float32, d, d) * scale,  # W_cross_Q
             randn(Float32, d, d) * scale,  # W_cross_K
             randn(Float32, d, d) * scale,  # W_cross_V
-            fill(Float32(0.5), d)         # alpha (start at 0.5)
+            fill(Float32(0.5), d)         # alpha: PRE-sigmoid (L6) → initial gate σ(0.5)≈0.62
         )
         push!(levels, params)
 

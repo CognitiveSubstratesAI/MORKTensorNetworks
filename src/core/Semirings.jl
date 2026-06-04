@@ -137,10 +137,16 @@ function semiring_matmul(sr::AbstractSemiring, A::AbstractMatrix, B::AbstractMat
     n2, p = size(B)
     @assert n == n2 "Inner dimensions must match: A is $(m)×$(n), B is $(n2)×$(p)"
 
-    C = fill(szero(sr), m, p)
+    # H1 fix (audit 2026-06-04): seed with element type of inputs, not szero(sr) which
+    # returns Float64. `fill(szero(sr), m, p)` allocates Matrix{Float64} even when A,B
+    # are Float32, causing silent widening + type instability downstream (HRT/ECAN/Shard
+    # code is Float32 throughout). Use T(szero(sr)) so output eltype matches inputs.
+    T = promote_type(eltype(A), eltype(B))
+    z = T(szero(sr))
+    C = fill(z, m, p)
     for i in 1:m
         for k in 1:p
-            acc = szero(sr)
+            acc = z
             for j in 1:n
                 acc = oplus(sr, acc, otimes(sr, A[i, j], B[j, k]))
             end
@@ -159,7 +165,8 @@ function semiring_matvec(sr::AbstractSemiring, A::AbstractMatrix, x::AbstractVec
     m, n = size(A)
     @assert n == length(x)
 
-    y = fill(szero(sr), m)
+    T = promote_type(eltype(A), eltype(x))   # H1 fix: preserve input type
+    y = fill(T(szero(sr)), m)
     for i in 1:m
         acc = szero(sr)
         for j in 1:n

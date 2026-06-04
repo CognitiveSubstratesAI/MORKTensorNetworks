@@ -91,6 +91,49 @@ end
         @test should_adapt(shard, 2) || !should_adapt(shard, 10000)
     end
 
+    # H3 regression (audit §9): materialize! must decode Rule-of-64 argument SYMBOLS
+    # into the symbolic relation R(src,dst), NOT trie-prefix nesting. Pre-fix this
+    # produced 14 byte-prefix pseudo-nodes + 27 edges for 3 atoms; correct is 3
+    # symbol-nodes {a,b,c} + 3 edges (a→b, b→c, a→c).
+    @testset "H3: materialize! decodes symbolic relation, not trie-prefix nesting" begin
+        s = new_space()
+        space_add_all_sexpr!(s, "(edge a b) (edge b c) (edge a c)")
+        shard = capture_shard(s, UInt8[])
+        materialize!(shard, s)
+        @test length(shard.node_keys) == 3            # symbols {a,b,c}, NOT byte prefixes
+        @test length(shard.col_idx) == 3              # edges a→b, b→c, a→c
+        keys = [String(copy(k)) for k in shard.node_keys]
+        @test Set(keys) == Set(["a", "b", "c"])       # nodes are the arg symbols
+        @test !("edge" in keys)                       # head/relation label is NOT a node
+
+        # The CSR is the actual adjacency → path_compose computes real reachability.
+        s2 = new_space()
+        space_add_all_sexpr!(s2, "(edge a b) (edge b c)")
+        sh2 = capture_shard(s2, UInt8[])
+        materialize!(sh2, s2)
+        nn = length(sh2.node_keys)
+        A = zeros(Float32, nn, nn)
+        for i in 1:nn
+            for k in sh2.row_ptr[i]:(sh2.row_ptr[i + 1] - 1)
+                A[i, sh2.col_idx[k]] = sh2.values[k]
+            end
+        end
+        k2 = [String(copy(k)) for k in sh2.node_keys]
+        ia = findfirst(==("a"), k2)
+        ic = findfirst(==("c"), k2)
+        R2 = path_reachability(A, 2)
+        @test R2[ia, ic] == true                      # a→b→c is reachable in 2 hops
+
+        # Weighted arity-4 (rel src dst weight): weight decoded onto the edge.
+        s3 = new_space()
+        space_add_all_sexpr!(s3, "(syn x y 5) (syn y z 3)")
+        sh3 = capture_shard(s3, UInt8[])
+        materialize!(sh3, s3)
+        @test length(sh3.node_keys) == 3              # {x,y,z}
+        @test length(sh3.col_idx) == 2                # x→y, y→z
+        @test Set(sh3.values) == Set(Float32[5.0, 3.0])  # weights decoded from arg3
+    end
+
     @testset "TuckerDecomposition — §5.4" begin
         A = rand(Float32, 6, 6)
         # M3 fix (audit 2026-06-04): tucker_decompose_2d returns (C,M,N,err) — 4 values.

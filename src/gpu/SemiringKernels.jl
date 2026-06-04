@@ -198,6 +198,13 @@ end
 # ─── Kernel 3: Elementwise Mask (Label Restriction) ─────────────────────────
 # out[i] = val[i] * mask[i]  (Hadamard product)
 # For Boolean: out[i] = val[i] if mask[i] != 0, else 0
+#
+# L9 note (audit 2026-06-04): this numeric `*` mask DIVERGES from the CPU
+# `path_restrict`, which is semiring-aware (`iszero(mask) ? szero(sr) : R`). Under
+# MaxPlus (szero=-Inf), masking by 0 should give -Inf, but `val * 0 = 0 ≠ -Inf`.
+# Latent only because nothing currently routes path_restrict through this GPU kernel
+# (same CPU/GPU divergence class as the Boolean tag kernel, H2). If path_restrict is
+# ever GPU-dispatched, this kernel must become semiring-aware (szero on masked-out).
 
 @kernel function elementwise_mask_kernel!(out, val, mask)
     i = @index(Global, Linear)

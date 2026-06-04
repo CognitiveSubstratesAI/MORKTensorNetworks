@@ -307,8 +307,16 @@ so that the output identity is semiring-correct (Boolean: true=1, SumProduct: 1.
 path_project is now semiring-aware, which fixes the secondary bug in the projection.
 """
 function path_universal(sr::AbstractSemiring, R::AbstractMatrix; thresh=0)
+    # C3 fix (audit 2026-06-04): guard against tropical semirings where complement
+    # `sone - R[x,y]` is meaningless (MaxPlus sone=0, MinPlus/Cost sone=0 — subtracting
+    # weights in (-∞,+∞] produces nonsense). Previously ran silently and returned garbage.
+    @assert sr isa Union{BooleanSemiring, SumProductSemiring, PLNSemiring} """
+path_universal is only defined for fuzzy/Boolean semirings where weights ∈ [0,1]
+and complement = sone - R[x,y] is meaningful.
+Got: $(typeof(sr)). For tropical semirings (MaxPlus, MinPlus, Cost) use path_project
+for existential quantification instead."""
     id = sone(sr)
-    complement = id .- R          # fuzzy complement; meaningful for Boolean/SumProduct
+    complement = id .- R
     proj = path_project(sr, complement; thresh=thresh)
     return id .- proj
 end

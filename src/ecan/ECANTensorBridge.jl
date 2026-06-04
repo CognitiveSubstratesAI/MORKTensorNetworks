@@ -17,6 +17,31 @@ Maps ECAN's attention dynamics onto the semiring tensor algebra:
           Wage:  budget distributed proportionally to STI
 
 Reference algorithm: t1_SpreadingActivation.metta (tradeSti, Hebbian learning)
+
+────────────────────────────────────────────────────────────────────────────────
+AUDIT 2026-06-04 — H6 + L3 (OWNER DECISION, not yet resolved):
+
+L3: the "§7.3.x" citations above are DANGLING — the supplied spec
+(mork_tensor_networks_spec.md) ends at §6 and has no §7. Core's MeTTa ECAN
+(packages/Core/lib/ecan/) is the only ground truth available.
+
+H6: this bridge DIVERGES from Core's ECAN semantics on four points. It is NOT a
+drop-in tensor acceleration of Core's ECAN despite the names ("rent","wage","Hebbian").
+  1. AV shape: Core uses a TRIPLE (STI, LTI, VLTI); this bridge has sti + lti vectors
+     but NO VLTI, and every op touches only `sti` (LTI ignored).
+  2. Rent: Core is TWO-TIER (WA rent on all atoms + AF rent on attentional-focus
+     atoms, charging BOTH STI and LTI). This bridge does a single threshold-gated
+     STI-only deduction — neither Core tier.
+  3. Hebbian: Core's `hebbian-conjunction` is an affine map (both-zero → 0.5 neutral
+     midpoint). This bridge uses the plain product ΔW = η·STI[x]·STI[y].
+  4. STI conservation: Core's `trade-sti!` clamps a transfer to the source's available
+     STI. This bridge's (max,+) spread + global decay does not conserve STI.
+
+RESOLUTION REQUIRED (owner): either (a) align to Core's AV / WA+AF / affine-conjunction
+semantics to make this a faithful acceleration, or (b) supply the missing §7 spec that
+authorises the simplified tensor form. Until then, treat this as ECAN-INSPIRED tensor
+dynamics, not Core-compatible ECAN. See also C4 (dense W vs sparse) and H5.
+────────────────────────────────────────────────────────────────────────────────
 """
 
 using ..Semirings: MaxPlusSemiring, SumProductSemiring, otimes, oplus, szero, sone

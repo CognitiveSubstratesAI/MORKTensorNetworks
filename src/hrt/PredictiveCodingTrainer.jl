@@ -57,12 +57,14 @@ end
 Compute prediction error and scalar surprise (MSE).
 """
 function prediction_error(predicted::Matrix{Float32}, observed::Matrix{Float32})
-    # Truncate to smaller dimension if sizes don't match exactly
-    m = min(size(predicted, 1), size(observed, 1))
-    d = min(size(predicted, 2), size(observed, 2))
-    error = observed[1:m, 1:d] .- predicted[1:m, 1:d]
-    surprise = sum(error .^ 2) / length(error)
-    return error, surprise
+    # M4 fix (audit 2026-06-04): silent truncation (min on both dims) was masking
+    # shape bugs — a pyramid level size mismatch (M5) silently produced plausible-
+    # looking numerics on a truncated submatrix. Replace with assertion so shape
+    # errors surface at the call site rather than propagating silently.
+    @assert size(predicted) == size(observed) "prediction_error: shape mismatch — predicted $(size(predicted)) vs observed $(size(observed)). Check HRT pyramid level sizing (n_tokens must be a power of 2 ≥ 2^(n_levels-1))."
+    err = observed .- predicted
+    surprise = sum(err .^ 2) / length(err)
+    return err, surprise
 end
 
 # ─── Inner Loop: Activity Update ─────────────────────────────────────────────

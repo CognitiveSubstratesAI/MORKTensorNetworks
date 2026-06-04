@@ -10,24 +10,20 @@ the updated shard in O(1) preserving structural sharing.
 Depends on: PathMap (trie + zipper), MORK (Space, PathMap{UnitVal})
 """
 
+# L4 fix (audit 2026-06-04): pruned unused imports. Removed PathMap, ReadZipperCore,
+# WriteZipperCore, read_zipper, write_zipper_at_path, get_val_at, zipper_descend_to_byte!,
+# zipper_ascend_byte!, wz_graft!, SparseArrays, LinearAlgebra — none referenced in the
+# body. (wz_graft! was the tell for the unimplemented O(1) graft reattach — see M2 note
+# on patch_and_reattach!.) Added zipper_child_mask + test_bit for the H4 child-iteration.
 using PathMap:
-    PathMap,
-    ReadZipperCore,
-    WriteZipperCore,
-    read_zipper,
     read_zipper_at_path,
-    write_zipper_at_path,
     zipper_val_count,
-    get_val_at,
     set_val_at!,
     remove_val_at!,
     zipper_to_next_val!,
     zipper_path,
-    zipper_descend_to_byte!,
-    zipper_ascend_byte!,
-    wz_graft!
-using SparseArrays
-using LinearAlgebra
+    zipper_child_mask,
+    test_bit
 
 # ── §2.1: Shard + PatchRecord ──────────────────────────────────────────────────
 
@@ -36,6 +32,14 @@ using LinearAlgebra
 
 One entry in the patch log. Kind ∈ {:insert, :delete, :update}.
 path = full byte path; value = new Float32 weight (for :update/:insert).
+
+L5 note (audit 2026-06-04): `value` is NOT consumed by `patch_and_reattach!` — the
+MORK background trie (`space.btm`) is a `PathMap{UnitVal}` (set membership), so it
+cannot store a per-edge weight; reattach writes `MORK.UNIT_VAL`. The field is retained
+(not dropped) because it is part of the public PatchRecord API and carries the
+kernel-computed weight for consumers that inspect `patch_log` BEFORE reattach (e.g. a
+GPU kernel reading edge weights). Honouring it on reattach would require a
+weight-valued trie, which is out of scope for the current UnitVal substrate.
 """
 struct PatchRecord
     kind::Symbol       # :insert | :delete | :update
@@ -82,13 +86,19 @@ function _partition_recursive!(
         push!(prefixes, copy(prefix))
         return nothing
     end
-    # Descend: try all 256 possible next bytes, recurse on non-empty
+    # H4 fix (audit 2026-06-04): iterate only PRESENT child bytes via
+    # zipper_child_mask + test_bit instead of scanning all 256 bytes and
+    # opening a zipper per byte. The original 256-way fan-out allocated
+    # vcat(prefix, b) for all 256 bytes regardless of presence — O(256)
+    # allocations and zipper-opens per node, dominating partition cost.
+    mask = zipper_child_mask(rz)
     found_children = false
+    child_prefix = copy(prefix)
+    push!(child_prefix, 0x00)   # reusable buffer: mutate last byte per child
     for b in UInt8(0):UInt8(255)
-        child_prefix = vcat(prefix, b)
-        crz = read_zipper_at_path(btm, child_prefix)
-        zipper_val_count(crz) == 0 && continue
+        test_bit(mask, b) || continue
         found_children = true
+        child_prefix[end] = b
         _partition_recursive!(btm, child_prefix, l_max, prefixes)
     end
     found_children || push!(prefixes, copy(prefix))
@@ -113,89 +123,137 @@ end
 # ── §2: Step 3 — Materialize ──────────────────────────────────────────────────
 
 """
+    _decode_relation(atom) → Union{Nothing, Tuple{String, Vector{String}}}
+
+Decode a Rule-of-64 atom byte-path into (head, argument-symbols).
+
+A relational atom `(rel a b ...)` is stored as the byte path:
+
+    [Arity(N)] [Symbol(len)]"rel" [Symbol(len)]"a" [Symbol(len)]"b" ...
+
+Returns `("rel", ["a","b",...])` reading the head + flat Symbol arguments.
+Returns `nothing` if the atom is not an arity-headed expression whose arguments
+are all flat symbols (variables / nested sub-expressions cause a safe bail-out —
+this materialiser handles the flat relational form `(rel src dst [weight])`, which
+matches MORK's reachability / connectome semantics; see audit §9.2).
+"""
+function _decode_relation(atom::AbstractVector{UInt8})
+    isempty(atom) && return nothing
+    t = MORK.byte_item(atom[1])
+    t isa MORK.ExprArity || return nothing
+    arity = Int(t.arity)
+    arity >= 1 || return nothing
+    syms = String[]
+    i = 2
+    n = length(atom)
+    for _ in 1:arity
+        i <= n || return nothing
+        ti = MORK.byte_item(atom[i])
+        ti isa MORK.ExprSymbol || return nothing   # var / nested expr — not a flat endpoint
+        len = Int(ti.size)
+        (i + len) <= n && push!(syms, String(@view atom[(i + 1):(i + len)]))
+        i += 1 + len
+    end
+    isempty(syms) && return nothing
+    return (syms[1], syms[2:end])
+end
+
+"""
     materialize!(shard, space) → Shard
 
-§2 Step 3: Convert the shard's subtrie into contiguous CSR arrays:
+§2 Step 3: Convert the shard's subtrie into contiguous CSR arrays representing the
+**symbolic relation** R(src, dst) the atoms encode:
 
   - row_ptr[i]: start of row i in col_idx / values
-  - col_idx[k]: column index of nonzero k
-  - values[k]:  weight of edge k
-  - node_keys:  mapping from CSR row/col index → byte path
+  - col_idx[k]: column index (dst node) of nonzero k
+  - values[k]:  edge weight
+  - node_keys:  CSR row/col index → argument-symbol payload bytes
 
-Treats each unique first-byte child of `prefix` as a node.
-Two adjacent nodes form a (row, col) edge.
+A node is a distinct **argument symbol**; an edge is `(arg1 → arg2)` for each atom,
+weighted by `arg3` if the relation is arity-4 `(rel src dst weight)` (else 1.0).
+The head symbol (relation label, e.g. `edge`/`syn`) is NOT a node.
+
+H3 FIX (audit §9, 2026-06-04): the previous implementation treated every i-byte
+PREFIX of every stored path as a node and emitted an edge for each consecutive
+prefix pair — i.e. it encoded trie-traversal nesting, not the relation. Against
+MORK ground truth (reachability.jl / info_flow_zipper.jl), `(edge a b)` is the edge
+a→b over symbol-nodes {a,b}, NOT a byte-prefix chain. Now decodes Rule-of-64
+argument symbols via `_decode_relation`, matching MORK's relational-query semantics.
+
+Scope note (C4): this builds a CSR but the downstream path-algebra is still dense
+(`semiring_matmul`). The dense→sparse-output / SoA-arena rewrite remains the C4
+package-identity decision; this fix corrects the *relation encoding*, not density.
+
+`zipper_path` is relative to the shard prefix, so the full atom = `prefix ++ suffix`.
 """
 function materialize!(shard::Shard, space)::Shard
     prefix = shard.prefix
     rz = read_zipper_at_path(space.btm, prefix)
 
-    # Collect all (path, val) pairs in this subtrie
-    paths = Vector{UInt8}[]
+    # Collect full atom byte-paths (prefix ++ relative suffix).
+    atoms = Vector{UInt8}[]
     while zipper_to_next_val!(rz)
-        push!(paths, copy(collect(zipper_path(rz))))
+        rel = collect(zipper_path(rz))
+        push!(atoms, vcat(prefix, rel))
     end
+    isempty(atoms) && return shard
 
-    isempty(paths) && return shard
-
-    # Build node → index map from all unique prefixes in all paths.
-    # Each unique i-byte prefix (for i ∈ 1..len(p)) is a node.
-    # This correctly handles full path traversal, not just first byte.
-    node_map = Dict{Vector{UInt8}, Int}()
-    for p in paths
-        for i in 1:length(p)
-            node_key = p[1:i]
-            haskey(node_map, node_key) || (node_map[node_key] = length(node_map) + 1)
+    # Decode each atom into a symbolic edge; intern argument symbols as nodes.
+    node_map = Dict{String, Int}()
+    node_payloads = Vector{UInt8}[]
+    edges = Tuple{Int, Int, Float32}[]
+    _node! = function (sym::String)
+        idx = get(node_map, sym, 0)
+        idx != 0 && return idx
+        idx = length(node_map) + 1
+        node_map[sym] = idx
+        push!(node_payloads, Vector{UInt8}(sym))
+        return idx
+    end
+    for atom in atoms
+        decoded = _decode_relation(atom)
+        decoded === nothing && continue
+        _head, args = decoded
+        length(args) >= 2 || continue
+        src = _node!(args[1])
+        dst = _node!(args[2])
+        w = 1.0f0
+        if length(args) >= 3
+            pw = tryparse(Float32, args[3])
+            pw === nothing || (w = pw)
         end
+        push!(edges, (src, dst, w))
     end
 
     n = length(node_map)
-    node_keys = Vector{Vector{UInt8}}(undef, n)
-    for (k, v) in node_map
-        node_keys[v] = k
-    end
-
-    # Build CSR: for every path, add edges for ALL consecutive prefix pairs.
-    # path [a,b,c] → edges (a→ab), (ab→abc) representing trie traversal.
-    rows = Int[]
-    cols = Int[]
-    vals = Float32[]
-    for p in paths
-        for i in 1:(length(p) - 1)
-            src_key = p[1:i]
-            dst_key = p[1:(i + 1)]
-            push!(rows, node_map[src_key])
-            push!(cols, node_map[dst_key])
-            push!(vals, 1.0f0)
-        end
-    end
-
-    if !isempty(rows)
-        # Build CSR manually to avoid Julia's sparse() returning CSC.
-        # CSR[i] → list of (col, val) for row i.
-        row_entries = [Tuple{Int, Float32}[] for _ in 1:n]
-        for k in eachindex(rows)
-            push!(row_entries[rows[k]], (cols[k], vals[k]))
-        end
-        row_ptr = Int[1]
-        col_idx = Int[]
-        nzval = Float32[]
-        for i in 1:n
-            for (c, v) in row_entries[i]
-                push!(col_idx, c)
-                push!(nzval, v)
-            end
-            push!(row_ptr, length(col_idx) + 1)
-        end
-        shard.row_ptr = row_ptr
-        shard.col_idx = col_idx
-        shard.values = nzval
-    else
-        shard.row_ptr = ones(Int, n + 1)
+    if n == 0
+        shard.row_ptr = Int[1]
         shard.col_idx = Int[]
         shard.values = Float32[]
+        shard.node_keys = Vector{UInt8}[]
+        return shard
     end
 
-    shard.node_keys = node_keys
+    # Build CSR (row-major) from the symbolic edge list.
+    row_entries = [Tuple{Int, Float32}[] for _ in 1:n]
+    for (src, dst, w) in edges
+        push!(row_entries[src], (dst, w))
+    end
+    row_ptr = Int[1]
+    col_idx = Int[]
+    nzval = Float32[]
+    for i in 1:n
+        for (c, v) in row_entries[i]
+            push!(col_idx, c)
+            push!(nzval, v)
+        end
+        push!(row_ptr, length(col_idx) + 1)
+    end
+
+    shard.row_ptr = row_ptr
+    shard.col_idx = col_idx
+    shard.values = nzval
+    shard.node_keys = node_payloads
     return shard
 end
 
@@ -221,10 +279,21 @@ end
 """
     patch_and_reattach!(shard, space) → Int
 
-§2 Step 5: Apply the patch log on the host, then splice the shard back via
-the zipper in O(1) (structural sharing preserved).
-
+§2 Step 5: Apply the patch log to the trie and clear it.
 Returns number of patches applied.
+
+M2 note (audit 2026-06-04): the spec §2.5 promises O(1) Λ_s graft reattach via
+structural sharing. This implementation does O(patches × path-length) per-path
+global writes instead. The wz_graft! import is present but unused — a real O(1)
+graft reattach is the correct target but requires the `capture_shard` to record
+a proper write-zipper continuation at the shard root, which is not yet wired.
+Owner decision: implement the graft reattach or update §2 to not claim O(1).
+
+M1 note (audit 2026-06-04): `empty!(shard.patch_log)` clears the log BEFORE any
+caller can check `length(patch_log)` in `should_adapt`. The patch count is returned
+so callers can make the adapt decision before the log is cleared — use the return
+value with `should_adapt_from_count(count, l_max)`, or call `should_adapt` BEFORE
+calling `patch_and_reattach!`.
 """
 function patch_and_reattach!(shard::Shard, space)::Int
     prefix = shard.prefix
@@ -239,7 +308,7 @@ function patch_and_reattach!(shard::Shard, space)::Int
             applied += 1
         end
     end
-    empty!(shard.patch_log)
+    empty!(shard.patch_log)   # clears log — call should_adapt BEFORE this
     return applied
 end
 
@@ -248,8 +317,13 @@ end
 """
     should_adapt(shard, l_max) → Bool
 
-§2 Step 6: Return true if the shard should be resplit next time
-(too large or too many patches — indicates "chatty" boundary).
+§2 Step 6: Return true if the shard should be resplit next time.
+
+IMPORTANT (M1, audit 2026-06-04): `patch_and_reattach!` calls `empty!(patch_log)`
+at the end, so the patch-count branch (`length(patch_log) > l_max ÷ 4`) is ALWAYS
+false if evaluated after reattach. Call `should_adapt` BEFORE `patch_and_reattach!`
+in the pipeline to get a meaningful result from the chatty-boundary check.
+Only the `size_cost` branch fires post-reattach.
 """
 function should_adapt(shard::Shard, l_max::Int)::Bool
     shard.size_cost > l_max * 2 || length(shard.patch_log) > l_max ÷ 4
