@@ -1,5 +1,7 @@
 # MORKTensorNetworks.jl
 
+[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://sivaji1012.github.io/MORKTensorNetworks/stable/)
+
 > From Path Algebra in MORK to Tensor Logic on GPUs
 
 Julia implementation of ["From Path Algebra in MORK to Tensor Logic on GPUs"](https://github.com/trueagi-io/MORK) (Goertzel, October 2025). Standalone package on top of [MORK.jl](https://github.com/sivaji1012/MORK) and [PathMap.jl](https://github.com/sivaji1012/PathMap).
@@ -192,8 +194,11 @@ HPC                   ← MPI peer-to-peer distributed spaces
 **Tests: `Pkg.test` 116/116 (107 functional + 9 Aqua), warm-REPL 107/107.**
 (The earlier "49/49" claim was stale — see `docs/AUDIT_2026-06-04.md`.)
 
-## Audit & open items
+## Documentation & open items
 
+- **[Architecture](docs/src/architecture.md)** — layered design (4-layer stack + 5 categories)
+  with both diagrams, mapping each component to its source file + audit status. Published via
+  Documenter → GitHub Pages (`docs/make.jl`, `.github/workflows/Documenter.yml`).
 - **`docs/AUDIT_2026-06-04.md`** — full finding-by-finding audit closeout (hybrid: JET +
   Aqua + spec-diff + external audit reconciliation).
 - **`docs/TODO.md`** — tracked open items. ⚠️ rows above are documented owner decisions
