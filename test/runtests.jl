@@ -93,10 +93,13 @@ end
 
     @testset "TuckerDecomposition — §5.4" begin
         A = rand(Float32, 6, 6)
-        C, M, N = tucker_decompose_2d(A, 3)
+        # M3 fix (audit 2026-06-04): tucker_decompose_2d returns (C,M,N,err) — 4 values.
+        # Previously destructured into 3; Julia silently discards the 4th, hiding err.
+        C, M, N, err = tucker_decompose_2d(A, 3)
         @test size(M) == (6, 3)
         @test size(N) == (6, 3)
         @test size(C) == (3, 3)
+        @test err >= 0   # reconstruction error is non-negative
         A_recon = tucker_reconstruct_2d(C, M, N)
         @test size(A_recon) == (6, 6)
     end
@@ -341,6 +344,36 @@ end
             v13 = Float32[i for i in 1:13]
             @test gpu_semiring_reduce(sr, v13; backend=CPU()) ≈ reduce(op, v13)
         end
+    end
+
+    # C2 regression (audit 2026-06-04): path_project Heaviside must be semiring-aware.
+    # The bug: `acc > thresh` (thresh=0) wrong for MinPlus (szero=+Inf → Inf>0=true,
+    # falsely reports a path) and MaxPlus (sone=0, a 0-weight path gives 0>0=false).
+    # Also returned one/zero instead of sone(sr)/szero(sr), wrong under MaxPlus/MinPlus.
+    @testset "C2: path_project semiring-aware Heaviside (MinPlus + MaxPlus)" begin
+        # MinPlus: szero=+Inf (no path), sone=0 (zero-cost path)
+        sr_min = MinPlusSemiring()
+        R_min = [0.0 Inf; Inf Inf]  # row 1 has a 0-cost path; row 2 is all szero
+        E_min = path_project(sr_min, R_min)
+        @test isequal(E_min[1], sone(sr_min))   # path exists → sone=0
+        @test isequal(E_min[2], szero(sr_min))  # no path → szero=+Inf (OLD: Inf>0=true, returned 1.0 ≠ sone)
+
+        # MaxPlus: szero=-Inf (no path), sone=0 (best=zero-weight)
+        sr_max = MaxPlusSemiring()
+        R_max = [0.0 -Inf; -Inf -Inf]  # row 1 has a 0-weight path; row 2 has no path
+        E_max = path_project(sr_max, R_max)
+        @test isequal(E_max[1], sone(sr_max))   # path exists → sone=0
+        @test isequal(E_max[2], szero(sr_max))  # no path → szero=-Inf (OLD: 0>0=false, returned 0.0 ≠ szero)
+    end
+
+    # C1 regression: export naming was wrong (hrt_init instead of init_hrt; init_state
+    # missing; HRTConfig missing from top-level exports). Verify now callable via `using`.
+    @testset "C1: HRT init functions reachable via top-level exports" begin
+        cfg = HRTConfig(n_tokens=8, d_model=16, n_levels=2)
+        params = init_hrt(cfg)    # was `hrt_init` (non-existent) in old export list
+        state = init_state(cfg)   # was missing from export list entirely
+        @test params isa HRTParams
+        @test state isa HRTState
     end
 
     @testset "path_universal — now exported and reachable" begin

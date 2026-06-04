@@ -26,6 +26,7 @@ export HRTConfig,
     HRTState,
     HRTParams,
     init_hrt,
+    init_state,   # audit C1: was missing from export list
     hrt_forward!,
     hrt_reconstruction_loss,
     self_attention,

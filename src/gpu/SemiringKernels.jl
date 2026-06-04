@@ -68,7 +68,11 @@ end
         return max(a, b)
     elseif tag == Int32(3)  # MinPlus
         return min(a, b)
-    elseif tag == Int32(4)  # Boolean
+    elseif tag == Int32(4)  # Boolean: OR as max on numeric values.
+        # CONTRACT: inputs must be pre-normalized to {0,1} for this to agree
+        # with the CPU BooleanSemiring (which coerces via !iszero before |/&).
+        # On non-0/1 float inputs, max(0.5, 0.7)=0.7 ≠ CPU Boolean OR = true.
+        # Audit H2 (2026-06-04): documented divergence; restrict callers to 0/1 data.
         return max(a, b)  # OR as max for numeric
     elseif tag == Int32(5)  # PLN
         return max(a, b)
@@ -86,7 +90,8 @@ end
         return a + b
     elseif tag == Int32(3)  # MinPlus
         return a + b
-    elseif tag == Int32(4)  # Boolean
+    elseif tag == Int32(4)  # Boolean: AND as min on numeric values.
+        # CONTRACT: inputs must be pre-normalized to {0,1}. See _sr_oplus note above.
         return min(a, b)  # AND as min for numeric
     elseif tag == Int32(5)  # PLN
         return a * b

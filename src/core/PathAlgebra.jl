@@ -210,18 +210,34 @@ path_restrict(R::AbstractMatrix, mask::AbstractMatrix) =
 """
     path_project(sr, R; thresh=0) → E
 
-Existential projection: for each row x, reduce over columns with ⊕,
-then apply threshold. Returns a vector.
+Existential projection: for each row x, reduce over columns with ⊕, then apply
+the semiring-aware Heaviside H: E[x] = sone(sr) if acc ≠ szero(sr), else szero(sr).
+Spec §3: H(x) = sone iff x ≠ additive-zero — NOT a numeric `> 0` test.
+
+The `thresh` keyword is kept for callers that want a numeric cutoff under
+SumProduct/PLN (where szero=0 and the semiring-aware test suffices anyway);
+it is IGNORED by the semiring-aware branch. Pass `thresh` only when you have
+a specific numeric reason to override the identity-based threshold.
+
+BUGS FIXED (audit 2026-06-04):
+  (1) `acc > thresh` with hardcoded `thresh=0` was wrong for MinPlus (szero=+Inf →
+      Inf>0=true, falsely reported a path) and MaxPlus (sone=0, so a 0-weight path
+      gave 0>0=false, falsely reported no path).
+  (2) `one(eltype(R))` / `zero(eltype(R))` were returned instead of `sone(sr)` /
+      `szero(sr)` — wrong under MaxPlus (sone=0, not 1) and MinPlus (szero=Inf).
 """
 function path_project(sr::AbstractSemiring, R::AbstractMatrix; thresh=0)
     m, n = size(R)
-    E = Vector{eltype(R)}(undef, m)
+    T = typeof(sone(sr))
+    E = Vector{T}(undef, m)
     for i in 1:m
         acc = szero(sr)
         for j in 1:n
             acc = oplus(sr, acc, R[i, j])
         end
-        E[i] = acc > thresh ? one(eltype(R)) : zero(eltype(R))
+        # Semiring-aware Heaviside: path exists iff accumulator ≠ additive zero.
+        # _heaviside is used by path_compose/path_union — same logic, consistent.
+        E[i] = _heaviside(sr, acc)
     end
     return E
 end
@@ -277,14 +293,24 @@ end
 """
     path_universal(sr, R; thresh=0) → U
 
-Universal quantification: U[x] = 1 - H(⊕_y (1 - R[x,y]))
+Universal quantification: U[x] = sone - H(⊕_y (sone - R[x,y]))
 "Do ALL y satisfy the condition?"
+
+Spec §3 defines this in the Boolean/fuzzy reading: complement = 1 - R[x,y].
+This operation is only semantically defined for semirings where weights live in
+[0,1] (Boolean, SumProduct/PLN). Under tropical semirings (MaxPlus, MinPlus, Cost)
+the complement `sone(sr) - R[x,y]` is meaningless; callers should use those
+semirings only for existential (`path_project`) operations.
+
+FIX (audit 2026-06-04): now uses `sone(sr)` instead of hardcoded `one(eltype(R))`
+so that the output identity is semiring-correct (Boolean: true=1, SumProduct: 1.0).
+path_project is now semiring-aware, which fixes the secondary bug in the projection.
 """
 function path_universal(sr::AbstractSemiring, R::AbstractMatrix; thresh=0)
-    m, n = size(R)
-    complement = one(eltype(R)) .- R
+    id = sone(sr)
+    complement = id .- R          # fuzzy complement; meaningful for Boolean/SumProduct
     proj = path_project(sr, complement; thresh=thresh)
-    return one(eltype(R)) .- proj
+    return id .- proj
 end
 
 end # module
