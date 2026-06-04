@@ -1,7 +1,26 @@
 using Test
 using MORKTensorNetworks
 
+const _HAS_AQUA = try
+    @eval using Aqua
+    true
+catch
+    false
+end
+
 @testset "MORKTensorNetworks" begin
+    if _HAS_AQUA
+        @testset "Aqua quality" begin
+            Aqua.test_all(
+                MORKTensorNetworks;
+                deps_compat=(check_extras=false,),
+                undefined_exports=false   # Aqua.find_undefined_exports not in v0.8
+            )
+        end
+    else
+        @info "Aqua not loadable (plain julia --project=.) — runs under Pkg.test/CI"
+    end
+
     @testset "Semirings — §3.5" begin
         sr = BooleanSemiring()
         @test oplus(sr, false, true) == true
