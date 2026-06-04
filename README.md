@@ -1,10 +1,15 @@
 # MORKTensorNetworks.jl
 
-[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://sivaji1012.github.io/MORKTensorNetworks/stable/)
+[![CI](https://github.com/CognitiveSubstratesAI/MORKTensorNetworks/actions/workflows/CI.yml/badge.svg)](https://github.com/CognitiveSubstratesAI/MORKTensorNetworks/actions/workflows/CI.yml)
+[![Docs (stable)](https://img.shields.io/badge/docs-stable-blue.svg)](https://cognitivesubstratesai.github.io/MORKTensorNetworks/stable/)
+[![Docs (dev)](https://img.shields.io/badge/docs-dev-blue.svg)](https://cognitivesubstratesai.github.io/MORKTensorNetworks/dev/)
+[![Code Style: Blue](https://img.shields.io/badge/code%20style-blue-4495d1.svg)](https://github.com/invenia/BlueStyle)
+[![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
+[![Julia 1.12+](https://img.shields.io/badge/Julia-1.12%2B-blue)](https://julialang.org)
 
 > From Path Algebra in MORK to Tensor Logic on GPUs
 
-Julia implementation of ["From Path Algebra in MORK to Tensor Logic on GPUs"](https://github.com/trueagi-io/MORK) (Goertzel, October 2025). Standalone package on top of [MORK.jl](https://github.com/sivaji1012/MORK) and [PathMap.jl](https://github.com/sivaji1012/PathMap).
+Julia implementation of ["From Path Algebra in MORK to Tensor Logic on GPUs"](https://github.com/trueagi-io/MORK) (Goertzel, October 2025). Standalone package on top of [MORK.jl](https://github.com/CognitiveSubstratesAI/MORK) and [PathMap.jl](https://github.com/CognitiveSubstratesAI/PathMap).
 
 ## What this is
 
@@ -150,8 +155,8 @@ ecan_hebbian_update!(ecan)
 
 | Package | Role |
 |---|---|
-| [MORK.jl](https://github.com/sivaji1012/MORK) | Space, exec atoms, sinks |
-| [PathMap.jl](https://github.com/sivaji1012/PathMap) | Trie, zipper, lattice algebra |
+| [MORK.jl](https://github.com/CognitiveSubstratesAI/MORK) | Space, exec atoms, sinks |
+| [PathMap.jl](https://github.com/CognitiveSubstratesAI/PathMap) | Trie, zipper, lattice algebra |
 | KernelAbstractions.jl | Vendor-neutral GPU kernels (CUDA/ROCm/Metal/oneAPI) |
 | LinearAlgebra | SVD, norm (Tucker HOOI, HRT) |
 | SparseArrays | CSR utilities |

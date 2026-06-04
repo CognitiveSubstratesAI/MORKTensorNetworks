@@ -10,6 +10,14 @@ MORK = "162375cb-4023-4ef9-895b-22c0041d5c13"
 PathMap = "a8b3d4e5-f012-4567-89ab-cdef01234567"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 
+[sources]
+# Dev-links to the sibling kernel + substrate checkouts (MORK in turn dev-links PathMap).
+# CI clones CognitiveSubstratesAI/{MORK,PathMap} next to this repo before instantiation.
+# Replaces the gitignored path-based Manifest so a clean checkout resolves these
+# unregistered packages.
+MORK = {path = "../MORK"}
+PathMap = {path = "../PathMap"}
+
 [compat]
 Aqua = "0.8.15"
 JET = "0.11.3"
