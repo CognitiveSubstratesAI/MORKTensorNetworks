@@ -7,12 +7,12 @@ Ports "From Path Algebra in MORK to Tensor Logic on GPUs"
 Spec: docs/specs/mork_tensor_networks_spec.md
 
 Package layout (mirrors paper sections):
-  §1-3  core/  — Semirings + PathAlgebra (path algebra → tensor logic)
-  §5    gpu/   — SemiringKernels + GPULayout (GPU-friendly execution)
-  §2    shard/ — ShardZipper (partition/capture/materialize/compute/patch/adapt)
-                 CrossShardJoin (halo/batched/reshard strategies)
-  §5.4  decomp/ — TuckerDecomposition (sparse→dense densification)
-  §6    hrt/   — HRT pyramid + PredictiveCodingTrainer
+§1-3  core/  — Semirings + PathAlgebra (path algebra → tensor logic)
+§5    gpu/   — SemiringKernels + GPULayout (GPU-friendly execution)
+§2    shard/ — ShardZipper (partition/capture/materialize/compute/patch/adapt)
+CrossShardJoin (halo/batched/reshard strategies)
+§5.4  decomp/ — TuckerDecomposition (sparse→dense densification)
+§6    hrt/   — HRT pyramid + PredictiveCodingTrainer
 
 Depends on: MORK, PathMap, KernelAbstractions (GPU vendor-neutral)
 """
@@ -69,7 +69,8 @@ export ecan_collect_rent!, ecan_distribute_wages!
 export ecan_build_weight_matrix, ecan_sti_vector
 export should_densify
 # CrossShardJoin
-export HaloStrategy, BatchedBoundaryStrategy, ReshardStrategy, cross_shard_join, select_join_strategy
+export HaloStrategy,
+    BatchedBoundaryStrategy, ReshardStrategy, cross_shard_join, select_join_strategy
 # HRT
 export HRTParams, HRTState, hrt_init, hrt_forward!, hrt_down_project!, hrt_cross_attn!
 export hrt_gated_fuse!, hrt_reconstruction_loss

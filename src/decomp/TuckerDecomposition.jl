@@ -7,14 +7,16 @@ relations into low-rank dense form for GPU-efficient dense einsums.
     A[i,j,k] ≈ Σ_{p,q,r} C[p,q,r] * M[i,p] * N[j,q] * P[k,r]
 
 Where:
+
   - C: core tensor (small, dense, mixes embedding coordinates)
   - M, N, P: factor matrices (learned embeddings)
 
 For 2D relations (most common in MORK):
-    A[i,j] ≈ Σ_p Σ_q C[p,q] * M[i,p] * N[j,q]
-            = M * C * N^T
+A[i,j] ≈ Σ_p Σ_q C[p,q] * M[i,p] * N[j,q]
+= M * C * N^T
 
 This module provides:
+
   - tucker_decompose_2d: ALS-based decomposition of a 2D matrix
   - tucker_reconstruct_2d: reconstruct from factors
   - should_densify: heuristic for when Tucker beats sparse
@@ -34,8 +36,9 @@ M (m×rank), N (n×rank) using Alternating Least Squares (ALS).
 
 Returns (C, M, N, reconstruction_error).
 """
-function tucker_decompose_2d(A::AbstractMatrix{T}, rank::Int;
-                              max_iter::Int=50, tol::Float64=1e-6) where T
+function tucker_decompose_2d(
+    A::AbstractMatrix{T}, rank::Int; max_iter::Int=50, tol::Float64=1e-6
+) where {T}
     m, n = size(A)
     rank = min(rank, m, n)  # can't exceed dimensions
 
@@ -95,11 +98,14 @@ end
 
 Heuristic for when Tucker densification beats sparse operations.
 Returns true if:
+
   - Fill ratio is between 5% and fill_threshold (too sparse = keep sparse,
     too dense = already dense)
   - Effective rank is low (rank_ratio of min dimension)
 """
-function should_densify(A::AbstractMatrix; fill_threshold::Float64=0.3, rank_ratio::Float64=0.5)
+function should_densify(
+    A::AbstractMatrix; fill_threshold::Float64=0.3, rank_ratio::Float64=0.5
+)
     m, n = size(A)
     nnz = count(!iszero, A)
     fill = nnz / (m * n)
@@ -127,7 +133,6 @@ function should_densify(A::AbstractMatrix; fill_threshold::Float64=0.3, rank_rat
     return effective_rank <= rank_ratio * min(m, n)
 end
 
-
 # ─── 3-mode Tucker decomposition (§5.4) ─────────────────────────────────────
 
 """
@@ -135,7 +140,7 @@ end
         → (C, M, N, P, error)
 
 §5.4: Full 3-mode Tucker decomposition:
-    A[i,j,k] ≈ Σ_{p,q,r} C[p,q,r] · M[i,p] · N[j,q] · P[k,r]
+A[i,j,k] ≈ Σ_{p,q,r} C[p,q,r] · M[i,p] · N[j,q] · P[k,r]
 
 Where C ∈ ℝ^{rank_1×rank_2×rank_3} is the core tensor and
 M ∈ ℝ^{d1×rank_1}, N ∈ ℝ^{d2×rank_2}, P ∈ ℝ^{d3×rank_3} are factor matrices.
@@ -143,9 +148,10 @@ M ∈ ℝ^{d1×rank_1}, N ∈ ℝ^{d2×rank_2}, P ∈ ℝ^{d3×rank_3} are facto
 Algorithm: Higher-Order Orthogonal Iteration (HOOI) — alternating
 mode-n unfolding SVD, mirrors the standard Tucker-ALS approach from §4.
 """
-function tucker_decompose_3d(A::AbstractArray{T,3},
-                              rank_1::Int, rank_2::Int, rank_3::Int;
-                              max_iter::Int=50, tol::Float64=1e-6) where T
+function tucker_decompose_3d(
+    A::AbstractArray{T, 3}, rank_1::Int, rank_2::Int, rank_3::Int; max_iter::Int=50,
+    tol::Float64=1e-6
+) where {T}
     d1, d2, d3 = size(A)
     rank_1 = min(rank_1, d1)
     rank_2 = min(rank_2, d2)
@@ -161,15 +167,15 @@ function tucker_decompose_3d(A::AbstractArray{T,3},
         # HOOI: update each factor given the others
         G1 = _ttm(A, N', 2)         # contract mode-2 with N'
         G1 = _ttm(G1, P', 3)         # contract mode-3 with P'
-        M  = _mode_unfold_svd(G1, 1, rank_1)
+        M = _mode_unfold_svd(G1, 1, rank_1)
 
         G2 = _ttm(A, M', 1)
         G2 = _ttm(G2, P', 3)
-        N  = _mode_unfold_svd(G2, 2, rank_2)
+        N = _mode_unfold_svd(G2, 2, rank_2)
 
         G3 = _ttm(A, M', 1)
         G3 = _ttm(G3, N', 2)
-        P  = _mode_unfold_svd(G3, 3, rank_3)
+        P = _mode_unfold_svd(G3, 3, rank_3)
 
         # Core tensor: C = A ×₁ M' ×₂ N' ×₃ P'
         C = _ttm(_ttm(_ttm(A, M', 1), N', 2), P', 3)
@@ -191,25 +197,28 @@ end
     tucker_reconstruct_3d(C, M, N, P) → Array{T,3}
 
 Reconstruct 3D tensor from Tucker factors:
-    A[i,j,k] = Σ_{p,q,r} C[p,q,r] · M[i,p] · N[j,q] · P[k,r]
+A[i,j,k] = Σ_{p,q,r} C[p,q,r] · M[i,p] · N[j,q] · P[k,r]
 """
-function tucker_reconstruct_3d(C::AbstractArray{T,3},
-                                M::AbstractMatrix{T},
-                                N::AbstractMatrix{T},
-                                P::AbstractMatrix{T}) where T
+function tucker_reconstruct_3d(
+    C::AbstractArray{T, 3}, M::AbstractMatrix{T}, N::AbstractMatrix{T}, P::AbstractMatrix{T}
+) where {T}
     _ttm(_ttm(_ttm(C, M, 1), N, 2), P, 3)
 end
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
-"""Mode-n unfolding of tensor A → matrix, take top-k left singular vectors."""
+"""
+Mode-n unfolding of tensor A → matrix, take top-k left singular vectors.
+"""
 function _mode_unfold_svd(A::AbstractArray, mode::Int, rank::Int)
     unfolded = _unfold(A, mode)
     U = svd(Float64.(unfolded)).U
-    return Float32.(U[:, 1:min(rank, size(U,2))])
+    return Float32.(U[:, 1:min(rank, size(U, 2))])
 end
 
-"""Mode-n unfolding: reshape tensor to matrix with mode n as rows."""
+"""
+Mode-n unfolding: reshape tensor to matrix with mode n as rows.
+"""
 function _unfold(A::AbstractArray, mode::Int)
     d = size(A)
     n = d[mode]
@@ -219,14 +228,16 @@ function _unfold(A::AbstractArray, mode::Int)
     reshape(permutedims(A, perm), n, rest)
 end
 
-"""Mode-n tensor-matrix product: contract tensor A with matrix M along mode n.
-Result has mode n replaced by size(M,1)."""
-function _ttm(A::AbstractArray{T}, M::AbstractMatrix, mode::Int) where T
-    d    = collect(size(A))
+"""
+Mode-n tensor-matrix product: contract tensor A with matrix M along mode n.
+Result has mode n replaced by size(M,1).
+"""
+function _ttm(A::AbstractArray{T}, M::AbstractMatrix, mode::Int) where {T}
+    d = collect(size(A))
     perm = [mode; setdiff(1:ndims(A), mode)]
-    Ap   = permutedims(A, perm)
-    Ar   = reshape(Ap, d[mode], :)
-    Br   = M * Ar
+    Ap = permutedims(A, perm)
+    Ar = reshape(Ap, d[mode], :)
+    Br = M * Ar
     new_d = copy(d)
     new_d[mode] = size(M, 1)
     iperm = invperm(perm)
@@ -255,18 +266,17 @@ Use case (spec §5.4): ShardZipper compute kernels needing to densify
 irregular-sparsity tensors of rank > 3 (e.g., the HRT pyramid's per-level
 4-mode (resolution, token, head, channel) attention tensor).
 """
-function tucker_decompose_nd(A::AbstractArray{T,N},
-                              ranks::Union{Tuple, AbstractVector{<:Integer}};
-                              max_iter::Int=50, tol::Float64=1e-6) where {T,N}
+function tucker_decompose_nd(
+    A::AbstractArray{T, N}, ranks::Union{Tuple, AbstractVector{<:Integer}};
+    max_iter::Int=50, tol::Float64=1e-6
+) where {T, N}
     length(ranks) == N ||
         error("tucker_decompose_nd: ranks length $(length(ranks)) ≠ tensor ndims $N")
 
     capped_ranks = [min(ranks[k], size(A, k)) for k in 1:N]
 
     # Initialize each factor via mode-k unfolding SVD.
-    factors = Matrix{Float32}[
-        _mode_unfold_svd(A, k, capped_ranks[k]) for k in 1:N
-    ]
+    factors = Matrix{Float32}[_mode_unfold_svd(A, k, capped_ranks[k]) for k in 1:N]
 
     prev_err = Inf64
     for _ in 1:max_iter

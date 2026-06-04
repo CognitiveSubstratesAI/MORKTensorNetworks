@@ -10,11 +10,22 @@ the updated shard in O(1) preserving structural sharing.
 Depends on: PathMap (trie + zipper), MORK (Space, PathMap{UnitVal})
 """
 
-using PathMap: PathMap, ReadZipperCore, WriteZipperCore,
-               read_zipper, read_zipper_at_path, write_zipper_at_path,
-               zipper_val_count, get_val_at, set_val_at!, remove_val_at!,
-               zipper_to_next_val!, zipper_path, zipper_descend_to_byte!,
-               zipper_ascend_byte!, wz_graft!
+using PathMap:
+    PathMap,
+    ReadZipperCore,
+    WriteZipperCore,
+    read_zipper,
+    read_zipper_at_path,
+    write_zipper_at_path,
+    zipper_val_count,
+    get_val_at,
+    set_val_at!,
+    remove_val_at!,
+    zipper_to_next_val!,
+    zipper_path,
+    zipper_descend_to_byte!,
+    zipper_ascend_byte!,
+    wz_graft!
 using SparseArrays
 using LinearAlgebra
 
@@ -27,21 +38,21 @@ One entry in the patch log. Kind ∈ {:insert, :delete, :update}.
 path = full byte path; value = new Float32 weight (for :update/:insert).
 """
 struct PatchRecord
-    kind  :: Symbol       # :insert | :delete | :update
-    path  :: Vector{UInt8}
-    value :: Float32
+    kind::Symbol       # :insert | :delete | :update
+    path::Vector{UInt8}
+    value::Float32
 end
 
 PatchRecord(kind::Symbol, path::Vector{UInt8}) = PatchRecord(kind, path, 1.0f0)
 
 mutable struct Shard
-    prefix    :: Vector{UInt8}
-    row_ptr   :: Vector{Int}
-    col_idx   :: Vector{Int}
-    values    :: Vector{Float32}
-    node_keys :: Vector{Vector{UInt8}}
-    patch_log :: Vector{PatchRecord}
-    size_cost :: Int
+    prefix::Vector{UInt8}
+    row_ptr::Vector{Int}
+    col_idx::Vector{Int}
+    values::Vector{Float32}
+    node_keys::Vector{Vector{UInt8}}
+    patch_log::Vector{PatchRecord}
+    size_cost::Int
 end
 
 # ── §2: Step 1 — Partition ─────────────────────────────────────────────────────
@@ -55,20 +66,21 @@ estimated size/cost ≤ l_max. Returns a list of shard prefix byte-paths.
 Strategy: BFS over trie nodes; split any subtrie whose val_count > l_max
 by descending one byte further.
 """
-function partition_trie(space, l_max::Int) :: Vector{Vector{UInt8}}
+function partition_trie(space, l_max::Int)::Vector{Vector{UInt8}}
     prefixes = Vector{UInt8}[]
     _partition_recursive!(space.btm, UInt8[], l_max, prefixes)
     isempty(prefixes) && push!(prefixes, UInt8[])  # root shard if tiny
     return prefixes
 end
 
-function _partition_recursive!(btm, prefix::Vector{UInt8}, l_max::Int,
-                                 prefixes::Vector{Vector{UInt8}})
-    rz   = read_zipper_at_path(btm, prefix)
+function _partition_recursive!(
+    btm, prefix::Vector{UInt8}, l_max::Int, prefixes::Vector{Vector{UInt8}}
+)
+    rz = read_zipper_at_path(btm, prefix)
     cost = zipper_val_count(rz)
     if cost <= l_max || length(prefix) >= 8
         push!(prefixes, copy(prefix))
-        return
+        return nothing
     end
     # Descend: try all 256 possible next bytes, recurse on non-empty
     found_children = false
@@ -92,8 +104,8 @@ continuation Γ_s that knows how to splice an updated version back in O(1).
 
 Returns an empty Shard with the prefix set. Materialization (Step 3) fills arrays.
 """
-function capture_shard(space, prefix::Vector{UInt8}) :: Shard
-    rz  = read_zipper_at_path(space.btm, prefix)
+function capture_shard(space, prefix::Vector{UInt8})::Shard
+    rz = read_zipper_at_path(space.btm, prefix)
     est = zipper_val_count(rz)
     return Shard(copy(prefix), Int[], Int[], Float32[], Vector{UInt8}[], PatchRecord[], est)
 end
@@ -104,6 +116,7 @@ end
     materialize!(shard, space) → Shard
 
 §2 Step 3: Convert the shard's subtrie into contiguous CSR arrays:
+
   - row_ptr[i]: start of row i in col_idx / values
   - col_idx[k]: column index of nonzero k
   - values[k]:  weight of edge k
@@ -112,9 +125,9 @@ end
 Treats each unique first-byte child of `prefix` as a node.
 Two adjacent nodes form a (row, col) edge.
 """
-function materialize!(shard::Shard, space) :: Shard
+function materialize!(shard::Shard, space)::Shard
     prefix = shard.prefix
-    rz     = read_zipper_at_path(space.btm, prefix)
+    rz = read_zipper_at_path(space.btm, prefix)
 
     # Collect all (path, val) pairs in this subtrie
     paths = Vector{UInt8}[]
@@ -147,9 +160,9 @@ function materialize!(shard::Shard, space) :: Shard
     cols = Int[]
     vals = Float32[]
     for p in paths
-        for i in 1:length(p)-1
+        for i in 1:(length(p) - 1)
             src_key = p[1:i]
-            dst_key = p[1:i+1]
+            dst_key = p[1:(i + 1)]
             push!(rows, node_map[src_key])
             push!(cols, node_map[dst_key])
             push!(vals, 1.0f0)
@@ -159,27 +172,27 @@ function materialize!(shard::Shard, space) :: Shard
     if !isempty(rows)
         # Build CSR manually to avoid Julia's sparse() returning CSC.
         # CSR[i] → list of (col, val) for row i.
-        row_entries = [Tuple{Int,Float32}[] for _ in 1:n]
+        row_entries = [Tuple{Int, Float32}[] for _ in 1:n]
         for k in eachindex(rows)
             push!(row_entries[rows[k]], (cols[k], vals[k]))
         end
         row_ptr = Int[1]
         col_idx = Int[]
-        nzval   = Float32[]
+        nzval = Float32[]
         for i in 1:n
             for (c, v) in row_entries[i]
                 push!(col_idx, c)
-                push!(nzval,   v)
+                push!(nzval, v)
             end
             push!(row_ptr, length(col_idx) + 1)
         end
         shard.row_ptr = row_ptr
         shard.col_idx = col_idx
-        shard.values  = nzval
+        shard.values = nzval
     else
         shard.row_ptr = ones(Int, n + 1)
         shard.col_idx = Int[]
-        shard.values  = Float32[]
+        shard.values = Float32[]
     end
 
     shard.node_keys = node_keys
@@ -197,7 +210,7 @@ PatchRecords to shard.patch_log. Does NOT mutate the trie.
 
 kernel_fn!(shard::Shard) → nothing  (writes to shard.patch_log)
 """
-function compute!(shard::Shard, kernel_fn!::Function) :: Shard
+function compute!(shard::Shard, kernel_fn!::Function)::Shard
     isempty(shard.node_keys) && return shard
     kernel_fn!(shard)
     return shard
@@ -213,8 +226,8 @@ the zipper in O(1) (structural sharing preserved).
 
 Returns number of patches applied.
 """
-function patch_and_reattach!(shard::Shard, space) :: Int
-    prefix  = shard.prefix
+function patch_and_reattach!(shard::Shard, space)::Int
+    prefix = shard.prefix
     applied = 0
     for rec in shard.patch_log
         full_path = vcat(prefix, rec.path)
@@ -238,7 +251,7 @@ end
 §2 Step 6: Return true if the shard should be resplit next time
 (too large or too many patches — indicates "chatty" boundary).
 """
-function should_adapt(shard::Shard, l_max::Int) :: Bool
+function should_adapt(shard::Shard, l_max::Int)::Bool
     shard.size_cost > l_max * 2 || length(shard.patch_log) > l_max ÷ 4
 end
 
@@ -248,11 +261,12 @@ end
     run_shard!(space, prefix, kernel_fn!; l_max=1000) → Int
 
 Run the full ShardZipper 6-step workflow on one shard:
-  capture → materialize → compute → patch & reattach.
+capture → materialize → compute → patch & reattach.
 Returns patches applied.
 """
-function run_shard!(space, prefix::Vector{UInt8}, kernel_fn!::Function;
-                    l_max::Int=1000) :: Int
+function run_shard!(
+    space, prefix::Vector{UInt8}, kernel_fn!::Function; l_max::Int=1000
+)::Int
     shard = capture_shard(space, prefix)
     materialize!(shard, space)
     compute!(shard, kernel_fn!)
@@ -266,9 +280,9 @@ end
 Partition the space, then run run_shard! on every shard.
 Returns total patches applied.
 """
-function run_all_shards!(space, kernel_fn!::Function; l_max::Int=1000) :: Int
+function run_all_shards!(space, kernel_fn!::Function; l_max::Int=1000)::Int
     prefixes = partition_trie(space, l_max)
-    total    = 0
+    total = 0
     for prefix in prefixes
         total += run_shard!(space, prefix, kernel_fn!; l_max=l_max)
     end

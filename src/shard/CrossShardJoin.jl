@@ -4,9 +4,9 @@
 MORK-Tensor-Networks paper §2: when a join (semiring matmul) requires
 data from multiple shards, three strategies handle the boundary:
 
-1. Halo: small read-only boundary slice included with each shard
-2. Batched boundary: second pass streaming boundary rows
-3. Resharding: move common cross-cuts inside shard boundaries
+ 1. Halo: small read-only boundary slice included with each shard
+ 2. Batched boundary: second pass streaming boundary rows
+ 3. Resharding: move common cross-cuts inside shard boundaries
 
 These are host-side orchestration strategies; the actual compute
 uses the same semiring kernels from SemiringKernels.jl.
@@ -15,8 +15,8 @@ module CrossShardJoin
 
 using ..Semirings: AbstractSemiring, oplus, otimes, szero
 
-export HaloStrategy, BatchedBoundaryStrategy, ReshardStrategy,
-       cross_shard_join, select_join_strategy
+export HaloStrategy,
+    BatchedBoundaryStrategy, ReshardStrategy, cross_shard_join, select_join_strategy
 
 # ─── Strategy Types ──────────────────────────────────────────────────────────
 
@@ -60,9 +60,12 @@ struct ReshardStrategy <: JoinStrategy end
 Compute shard's portion of A * B, including halo rows from neighboring shards.
 A_shard includes halo_rows extra rows beyond its owned shard_rows.
 """
-function halo_join(sr::AbstractSemiring,
-                   A_shard::AbstractMatrix, B_full::AbstractMatrix,
-                   shard_rows::UnitRange{Int})
+function halo_join(
+    sr::AbstractSemiring,
+    A_shard::AbstractMatrix,
+    B_full::AbstractMatrix,
+    shard_rows::UnitRange{Int}
+)
     m = length(shard_rows)
     n = size(B_full, 2)
     k = size(A_shard, 2)
@@ -86,12 +89,13 @@ end
     batched_boundary_join(sr, A, B, shard_ranges) → C
 
 Two-pass join:
-  Pass 1: compute within-shard blocks (no cross-shard data needed)
-  Pass 2: add cross-shard boundary contributions
+Pass 1: compute within-shard blocks (no cross-shard data needed)
+Pass 2: add cross-shard boundary contributions
 """
-function batched_boundary_join(sr::AbstractSemiring,
-                                A::AbstractMatrix, B::AbstractMatrix,
-                                shard_ranges::Vector{UnitRange{Int}})
+function batched_boundary_join(
+    sr::AbstractSemiring, A::AbstractMatrix, B::AbstractMatrix,
+    shard_ranges::Vector{UnitRange{Int}}
+)
     m, k = size(A)
     k2, n = size(B)
     C = fill(szero(sr), m, n)
@@ -138,23 +142,24 @@ end
 `halo_width` rows from adjacent shards. This avoids a second streaming pass.
 
 For each shard i with rows `r`:
+
   - Extended rows = r extended by min(halo_width, gap) rows from adjacent shards
   - Compute A[extended, :] × B → C_extended
   - Write only owned rows back to C
 """
-function halo_boundary_join(sr::AbstractSemiring,
-                             A::AbstractMatrix, B::AbstractMatrix,
-                             shard_ranges::Vector{UnitRange{Int}},
-                             halo_width::Int) :: Matrix
+function halo_boundary_join(
+    sr::AbstractSemiring, A::AbstractMatrix, B::AbstractMatrix,
+    shard_ranges::Vector{UnitRange{Int}}, halo_width::Int
+)::Matrix
     m, k = size(A)
-    _, n  = size(B)
-    C     = fill(szero(sr), m, n)
+    _, n = size(B)
+    C = fill(szero(sr), m, n)
 
     for (s_idx, owned_rows) in enumerate(shard_ranges)
         # Extend with halo from previous and next shards
-        halo_start = max(1,   first(owned_rows) - halo_width)
-        halo_end   = min(m,   last(owned_rows)  + halo_width)
-        extended   = halo_start:halo_end
+        halo_start = max(1, first(owned_rows) - halo_width)
+        halo_end = min(m, last(owned_rows) + halo_width)
+        extended = halo_start:halo_end
 
         # Compute join over extended rows, write back only owned
         for i in owned_rows
@@ -183,7 +188,9 @@ Strategy: merge adjacent shards that share >20% of columns to eliminate
 cross-shard boundaries for the most common join patterns.
 Returns new shard_ranges with hot nodes colocated.
 """
-function reshard_ranges(A::AbstractMatrix, shard_ranges::Vector{UnitRange{Int}}) :: Vector{UnitRange{Int}}
+function reshard_ranges(
+    A::AbstractMatrix, shard_ranges::Vector{UnitRange{Int}}
+)::Vector{UnitRange{Int}}
     isempty(shard_ranges) && return shard_ranges
     n_shards = length(shard_ranges)
     n_shards == 1 && return shard_ranges
@@ -194,7 +201,7 @@ function reshard_ranges(A::AbstractMatrix, shard_ranges::Vector{UnitRange{Int}})
     while i <= n_shards
         curr = shard_ranges[i]
         if i < n_shards
-            next = shard_ranges[i+1]
+            next = shard_ranges[i + 1]
             # Cross-shard overlap: count columns of A[curr_rows] that land in next_rows
             cross = 0
             for r in curr
@@ -227,6 +234,7 @@ export halo_boundary_join, reshard_ranges
     select_join_strategy(n_shards, avg_boundary_size, total_size) → JoinStrategy
 
 Heuristic for choosing the best cross-shard join strategy:
+
   - Halo: boundary < 5% of shard size
   - Batched: boundary 5-20% of shard size
   - Reshard: boundary > 20% (restructure is worth it)
@@ -254,13 +262,19 @@ end
 
 Perform a semiring join across shards using the selected strategy.
 """
-function cross_shard_join(sr::AbstractSemiring,
-                           A::AbstractMatrix, B::AbstractMatrix,
-                           shard_ranges::Vector{UnitRange{Int}};
-                           strategy::Union{JoinStrategy, Nothing}=nothing)
+function cross_shard_join(
+    sr::AbstractSemiring,
+    A::AbstractMatrix,
+    B::AbstractMatrix,
+    shard_ranges::Vector{UnitRange{Int}};
+    strategy::Union{JoinStrategy, Nothing}=nothing
+)
     if strategy === nothing
-        avg_shard = length(shard_ranges) > 0 ?
-            sum(length(r) for r in shard_ranges) ÷ length(shard_ranges) : size(A, 1)
+        avg_shard = if length(shard_ranges) > 0
+            sum(length(r) for r in shard_ranges) ÷ length(shard_ranges)
+        else
+            size(A, 1)
+        end
         # Estimate boundary as edges between adjacent shards
         avg_boundary = max(1, avg_shard ÷ 10)
         strategy = select_join_strategy(length(shard_ranges), avg_boundary, avg_shard)

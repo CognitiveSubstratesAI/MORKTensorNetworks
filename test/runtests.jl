@@ -2,22 +2,21 @@ using Test
 using MORKTensorNetworks
 
 @testset "MORKTensorNetworks" begin
-
     @testset "Semirings — §3.5" begin
         sr = BooleanSemiring()
-        @test oplus(sr, false, true)  == true
+        @test oplus(sr, false, true) == true
         @test otimes(sr, true, false) == false
         @test szero(sr) == false
-        @test sone(sr)  == true
+        @test sone(sr) == true
 
         sr2 = MaxPlusSemiring()
         @test oplus(sr2, 3.0f0, 5.0f0) == 5.0f0
         @test otimes(sr2, 2.0f0, 3.0f0) == 5.0f0
         @test szero(sr2) == -Inf32
-        @test sone(sr2)  == 0.0f0
+        @test sone(sr2) == 0.0f0
 
         sr3 = SumProductSemiring()
-        @test oplus(sr3, 2.0f0, 3.0f0)  == 5.0f0
+        @test oplus(sr3, 2.0f0, 3.0f0) == 5.0f0
         @test otimes(sr3, 2.0f0, 3.0f0) == 6.0f0
     end
 
@@ -32,16 +31,16 @@ using MORKTensorNetworks
 
         # Union: S has (1,2), P has (2,3) → union has both
         U = path_union(sr, S, P)
-        @test U[1,2] > 0   # from S
-        @test U[2,3] > 0   # from P
+        @test U[1, 2] > 0   # from S
+        @test U[2, 3] > 0   # from P
 
         I = path_intersect(sr, S, S)
-        @test I[1,2] > 0  # S∩S = S
+        @test I[1, 2] > 0  # S∩S = S
 
         # Viterbi best-path
         W = Float32[0 1 0; 0 0 2; 0 0 0]
         Score = path_viterbi(W)
-        @test Score[1,3] ≈ 3.0f0   # best 2-hop: 1+2=3
+        @test Score[1, 3] ≈ 3.0f0   # best 2-hop: 1+2=3
     end
 
     @testset "ShardZipper — §2 end-to-end" begin
@@ -85,19 +84,20 @@ using MORKTensorNetworks
 
     @testset "CrossShardJoin — §5.6 strategies" begin
         sr = BooleanSemiring()
-        A  = Float32[1 0; 1 1]
-        B  = Float32[0 1; 1 0]
+        A = Float32[1 0; 1 1]
+        B = Float32[0 1; 1 0]
         strat = HaloStrategy(1)
         @test strat isa HaloStrategy
         @test strat.halo_width == 1
     end
 
-
     @testset "BCSR — §5.1 Block CSR" begin
-        A = Float32[1 0 2 0;
-                    0 0 0 3;
-                    4 0 5 0;
-                    0 6 0 7]
+        A = Float32[
+            1 0 2 0;
+            0 0 0 3;
+            4 0 5 0;
+            0 6 0 7
+        ]
         bcsr = dense_to_bcsr(A, 2, 2)
         @test bcsr isa BCSRMatrix{Float32}
         @test bcsr.block_r == 2
@@ -135,11 +135,11 @@ using MORKTensorNetworks
         state.sti = Float32[0.8, 0.3, 0.1, 0.6]
 
         # §7.3.2: Build Hebbian weight matrix
-        links = [(1,2,0.5f0), (2,3,0.4f0), (3,4,0.3f0), (4,1,0.2f0)]
+        links = [(1, 2, 0.5f0), (2, 3, 0.4f0), (3, 4, 0.3f0), (4, 1, 0.2f0)]
         W = ecan_build_weight_matrix(links, n)
         state.W = W
-        @test W[1,2] == 0.5f0
-        @test W[2,4] == -Inf32  # no link
+        @test W[1, 2] == 0.5f0
+        @test W[2, 4] == -Inf32  # no link
 
         # §7.3.1: STI spreading as (max,+) matmul
         old_sti = copy(state.sti)
@@ -150,10 +150,10 @@ using MORKTensorNetworks
 
         # §7.3.2: Hebbian update — save original before update
         state.sti = Float32[0.8, 0.3, 0.1, 0.6]
-        state.W   = copy(W)
-        w12_before = state.W[1,2]
+        state.W = copy(W)
+        w12_before = state.W[1, 2]
         ecan_hebbian_update!(state; η=0.1f0, decay=1.0f0)  # no decay → pure Hebbian
-        @test state.W[1,2] > w12_before  # co-active pair strengthened
+        @test state.W[1, 2] > w12_before  # co-active pair strengthened
 
         # §7.3.3: Rent collection
         state.sti = Float32[0.8, 0.3, 0.1, 0.6]
@@ -178,7 +178,7 @@ using MORKTensorNetworks
         I = path_intersect(sr_sp, R, R)
         # min(R, R) == R; otimes(R, R) = R.^2 = [0.36 0.09; 0 0.64]
         @test I == R                                # spec semantics
-        @test !isapprox(I[1,1], 0.36; atol=1e-6)    # NOT the buggy otimes result
+        @test !isapprox(I[1, 1], 0.36; atol=1e-6)    # NOT the buggy otimes result
 
         # ── path_compose: spec §3 row 1 says T = H(Σ R⊗S). Default applies H.
         # Under SumProduct, compose(R, S) used to return raw matmul; should
@@ -186,30 +186,30 @@ using MORKTensorNetworks
         S = Float64[0 1; 0 0]
         P = Float64[0 0; 0 1]
         T = path_compose(sr_sp, S, P)
-        @test T[1,2] == 1.0   # path exists, projected to sone
-        @test T[2,2] == 0.0   # no path, projected to szero
+        @test T[1, 2] == 1.0   # path exists, projected to sone
+        @test T[2, 2] == 0.0   # no path, projected to szero
         # Opt-out: apply_threshold=false gives the raw weighted sum
         T_raw = path_compose(sr_sp, S, P; apply_threshold=false)
-        @test T_raw[1,2] == 1.0   # also 1 in this case (binary input)
+        @test T_raw[1, 2] == 1.0   # also 1 in this case (binary input)
 
         # ── path_union: spec §3 row 4 says U = H(R + S). Under SumProduct,
         # union(R, R) used to return 2R; should now return R thresholded.
         U = path_union(sr_sp, R, R)
-        @test U[1,1] == 1.0   # 0.6+0.6=1.2 > 0 → projects to 1
-        @test U[2,1] == 0.0   # 0+0=0 → szero
-        @test !isapprox(U[1,1], 1.2; atol=1e-6)   # NOT the un-thresholded sum
+        @test U[1, 1] == 1.0   # 0.6+0.6=1.2 > 0 → projects to 1
+        @test U[2, 1] == 0.0   # 0+0=0 → szero
+        @test !isapprox(U[1, 1], 1.2; atol=1e-6)   # NOT the un-thresholded sum
 
         # ── path_restrict: spec §3 row 3, semiring-aware. Under MaxPlus
         # (sone=0, szero=-Inf), restrict with mask=0 should yield -Inf,
         # not the buggy 0 from `R .* 0`.
         sr_mp = MaxPlusSemiring()
-        Rmp  = Float64[0.5 1.0; 2.0 0.7]
+        Rmp = Float64[0.5 1.0; 2.0 0.7]
         mask = Float64[1 0; 0 1]
         Rr = path_restrict(sr_mp, Rmp, mask)
-        @test Rr[1,1] == 0.5     # mask=1, pass through
-        @test Rr[1,2] == -Inf    # mask=0, szero(MaxPlus) = -Inf (was 0.0!)
-        @test Rr[2,1] == -Inf    # same
-        @test Rr[2,2] == 0.7     # pass through
+        @test Rr[1, 1] == 0.5     # mask=1, pass through
+        @test Rr[1, 2] == -Inf    # mask=0, szero(MaxPlus) = -Inf (was 0.0!)
+        @test Rr[2, 1] == -Inf    # same
+        @test Rr[2, 2] == 0.7     # pass through
     end
 
     @testset "SemiringKernels SpGEMM — multi-semiring correctness vs CPU reference" begin
@@ -225,21 +225,23 @@ using MORKTensorNetworks
         R = Float64[0 1 0; 0 0 1; 0 0 0]
         S = Float64[0 0 1; 0 0 0; 1 0 0]
 
-        for sr in (SumProductSemiring(), MaxPlusSemiring(), BooleanSemiring(),
-                   PLNSemiring(), CostSemiring(), MinPlusSemiring())
+        for sr in (
+            SumProductSemiring(), MaxPlusSemiring(), BooleanSemiring(), PLNSemiring(),
+            CostSemiring(), MinPlusSemiring()
+        )
             # Sparsify with the semiring's szero so zeros are dropped correctly.
             # For numeric semirings that's 0.0; for MaxPlus/Cost it's ±Inf so
             # we keep the test on numeric-zero matrices to share inputs.
             sr isa MaxPlusSemiring && continue   # different zero — skip
             sr isa MinPlusSemiring && continue
-            sr isa CostSemiring    && continue
+            sr isa CostSemiring && continue
 
             rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
             rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)
-            gpu_result = gpu_semiring_spmm(sr,
-                                            rowptr_R, colval_R, nzval_R,
-                                            rowptr_S, colval_S, nzval_S, n;
-                                            backend=CPU())
+            gpu_result = gpu_semiring_spmm(
+                sr, rowptr_R, colval_R, nzval_R, rowptr_S, colval_S, nzval_S, n;
+                backend=CPU()
+            )
             cpu_result = semiring_matmul(sr, R, S)
             @test gpu_result ≈ cpu_result
         end
@@ -255,12 +257,12 @@ using MORKTensorNetworks
         R = Float64[0 1 0; 0 0 1; 0 0 0]
         S = Float64[0 0 1; 0 0 0; 0 1 0]
         T_default = path_compose(sr, R, S)                       # dense CPU
-        T_gpu     = path_compose(sr, R, S; backend=CPU())        # SpGEMM path
+        T_gpu = path_compose(sr, R, S; backend=CPU())        # SpGEMM path
         @test T_default ≈ T_gpu
 
         # Also verify the apply_threshold=false (raw) path through SpGEMM.
         T_raw_default = path_compose(sr, R, S; apply_threshold=false)
-        T_raw_gpu     = path_compose(sr, R, S; apply_threshold=false, backend=CPU())
+        T_raw_gpu = path_compose(sr, R, S; apply_threshold=false, backend=CPU())
         @test T_raw_default ≈ T_raw_gpu
     end
 
@@ -270,8 +272,7 @@ using MORKTensorNetworks
         # _mode_unfold_svd). New `tucker_decompose_nd` covers arbitrary
         # rank — verified on a 4-mode tensor here.
         # Use a low-rank fixture so the relative error stays small.
-        A4 = Float32[i + 2j + 3k + 4l
-                     for i in 1:5, j in 1:4, k in 1:3, l in 1:3]
+        A4 = Float32[i + 2j + 3k + 4l for i in 1:5, j in 1:4, k in 1:3, l in 1:3]
         ranks = (3, 3, 2, 2)
         C, factors, err = tucker_decompose_nd(A4, ranks)
         # Core tensor matches the rank tuple
@@ -307,11 +308,8 @@ using MORKTensorNetworks
         # across a few semirings and a few sizes including odd lengths.
         using KernelAbstractions: CPU
         using MORKTensorNetworks.SemiringKernels: gpu_semiring_reduce
-        for (sr, op) in (
-                (SumProductSemiring(), +),
-                (MaxPlusSemiring(),    max),
-                (MinPlusSemiring(),    min),
-            )
+        for (sr, op) in
+            ((SumProductSemiring(), +), (MaxPlusSemiring(), max), (MinPlusSemiring(), min))
             # Length 1 → identity
             @test gpu_semiring_reduce(sr, [3.0f0]; backend=CPU()) == 3.0f0
             # Length 8 (power of 2)
@@ -341,5 +339,4 @@ using MORKTensorNetworks
         @test u_mix[1] == 1.0     # row 1: all ones
         @test u_mix[2] == 0.0     # row 2 has a zero
     end
-
 end  # MORKTensorNetworks

@@ -6,6 +6,7 @@ All operations parameterized by semiring from Semirings.jl.
 Uses CSR format; GPU-accelerated via SemiringKernels.jl.
 
 Operations:
+
   - path_compose:     R ◦ S (relation composition via semiring matmul)
   - path_union:       R ∪ S (elementwise ⊕)
   - path_intersect:   R ∩ S (elementwise ⊗)
@@ -16,19 +17,27 @@ Operations:
 module PathAlgebra
 
 using ..Semirings
-using ..SemiringKernels: gpu_semiring_spmv, gpu_semiring_spmm,
-                         gpu_elementwise_mask, gpu_threshold, gpu_semiring_reduce
+using ..SemiringKernels: gpu_semiring_spmv, gpu_semiring_spmm, gpu_elementwise_mask,
+    gpu_threshold, gpu_semiring_reduce
 using KernelAbstractions: CPU
 
-export path_compose, path_union, path_intersect,
-       path_restrict, path_project, path_transpose,
-       path_reachability, path_viterbi, path_count,
-       path_universal
+export path_compose,
+    path_union,
+    path_intersect,
+    path_restrict,
+    path_project,
+    path_transpose,
+    path_reachability,
+    path_viterbi,
+    path_count,
+    path_universal
 
 # ─── CSR Helpers ─────────────────────────────────────────────────────────────
 
-"""Dense matrix → CSR conversion."""
-function dense_to_csr(A::AbstractMatrix{T}) where T
+"""
+Dense matrix → CSR conversion.
+"""
+function dense_to_csr(A::AbstractMatrix{T}) where {T}
     m, n = size(A)
     rowptr = Int32[1]
     colval = Int32[]
@@ -36,9 +45,9 @@ function dense_to_csr(A::AbstractMatrix{T}) where T
 
     for i in 1:m
         for j in 1:n
-            if !iszero(A[i,j]) && isfinite(A[i,j])
+            if !iszero(A[i, j]) && isfinite(A[i, j])
                 push!(colval, Int32(j))
-                push!(nzval, A[i,j])
+                push!(nzval, A[i, j])
             end
         end
         push!(rowptr, Int32(length(colval) + 1))
@@ -46,11 +55,13 @@ function dense_to_csr(A::AbstractMatrix{T}) where T
     return rowptr, colval, nzval, m, n
 end
 
-"""CSR → dense matrix conversion."""
-function csr_to_dense(rowptr, colval, nzval, m, n, ::Type{T}=Float64) where T
+"""
+CSR → dense matrix conversion.
+"""
+function csr_to_dense(rowptr, colval, nzval, m, n, ::Type{T}=Float64) where {T}
     A = zeros(T, m, n)
     for i in 1:m
-        for idx in rowptr[i]:rowptr[i+1]-1
+        for idx in rowptr[i]:(rowptr[i + 1] - 1)
             j = colval[idx]
             A[i, j] = nzval[idx]
         end
@@ -66,7 +77,7 @@ end
     path_compose(sr, R, S; apply_threshold::Bool=true, backend=nothing) → C
 
 Compose relations R and S per spec §3 table:
-    T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])
+T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])
 
 Where H is the semiring-aware Heaviside step: H(x) = sone(sr) if x ≠ szero(sr),
 else szero(sr). Default applies H per spec; pass `apply_threshold=false` for
@@ -83,18 +94,27 @@ Previously the H wrapper was silently dropped, so `path_compose` under
 SumProduct returned a path-count matrix instead of a {0,1} reachability matrix.
 And the GPU path was unreachable because `gpu_semiring_spmm` did not exist.
 """
-function path_compose(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
-                       apply_threshold::Bool=true,
-                       backend=nothing)
+function path_compose(
+    sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix; apply_threshold::Bool=true,
+    backend=nothing
+)
     raw = if backend === nothing
         semiring_matmul(sr, R, S)
     else
         # Convert dense → CSR, run SpGEMM, return dense output matrix.
         rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
         rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)
-        gpu_semiring_spmm(sr, rowptr_R, colval_R, nzval_R,
-                              rowptr_S, colval_S, nzval_S, n;
-                          backend=backend)
+        gpu_semiring_spmm(
+            sr,
+            rowptr_R,
+            colval_R,
+            nzval_R,
+            rowptr_S,
+            colval_S,
+            nzval_S,
+            n;
+            backend=backend
+        )
     end
     apply_threshold ? _heaviside(sr, raw) : raw
 end
@@ -123,8 +143,9 @@ Default applies H; pass `apply_threshold=false` for raw semiring ⊕
 Previously H was silently dropped — under SumProduct, `union(R, R)` returned
 `2*R` instead of `R`.
 """
-function path_union(sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
-                     apply_threshold::Bool=true)
+function path_union(
+    sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix; apply_threshold::Bool=true
+)
     @assert size(R) == size(S)
     U = similar(R)
     for i in eachindex(R)
@@ -198,7 +219,7 @@ function path_project(sr::AbstractSemiring, R::AbstractMatrix; thresh=0)
     for i in 1:m
         acc = szero(sr)
         for j in 1:n
-            acc = oplus(sr, acc, R[i,j])
+            acc = oplus(sr, acc, R[i, j])
         end
         E[i] = acc > thresh ? one(eltype(R)) : zero(eltype(R))
     end

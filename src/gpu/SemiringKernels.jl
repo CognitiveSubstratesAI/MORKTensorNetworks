@@ -5,16 +5,17 @@ MORK-Tensor-Networks paper §3: maps tensor logic to GPU kernels parameterized
 by configurable semirings. Vendor-neutral: CUDA, ROCm, oneAPI, Metal.
 
 Kernel inventory (paper Table 1):
-  1. semiring_spmv!     — sparse matrix-vector (SpMV) with semiring
-  2. semiring_reduce!   — ⊕-reduction over a vector
-  3. elementwise_mask!  — Hadamard product for label restriction
-  4. threshold!         — Heaviside H(x) for existential quantification
-  5. semiring_spmm!     — sparse matrix-matrix (SpGEMM) with semiring
+
+ 1. semiring_spmv!     — sparse matrix-vector (SpMV) with semiring
+ 2. semiring_reduce!   — ⊕-reduction over a vector
+ 3. elementwise_mask!  — Hadamard product for label restriction
+ 4. threshold!         — Heaviside H(x) for existential quantification
+ 5. semiring_spmm!     — sparse matrix-matrix (SpGEMM) with semiring
 
 Uses CSR (Compressed Sparse Row) format for sparse matrices:
-  rowptr::Vector{Int32}   — row pointer array (length m+1)
-  colval::Vector{Int32}   — column indices (length nnz)
-  nzval::Vector{T}        — nonzero values (length nnz)
+rowptr::Vector{Int32}   — row pointer array (length m+1)
+colval::Vector{Int32}   — column indices (length nnz)
+nzval::Vector{T}        — nonzero values (length nnz)
 """
 module SemiringKernels
 
@@ -22,12 +23,17 @@ using KernelAbstractions
 using KernelAbstractions: @kernel, @index
 using ..Semirings
 
-export semiring_spmv_kernel!, semiring_spmm_kernel!,
-       semiring_reduce_kernel!,
-       elementwise_mask_kernel!, threshold_kernel!,
-       gpu_semiring_spmv, gpu_semiring_spmm, gpu_semiring_reduce,
-       gpu_elementwise_mask, gpu_threshold,
-       semiring_tag
+export semiring_spmv_kernel!,
+    semiring_spmm_kernel!,
+    semiring_reduce_kernel!,
+    elementwise_mask_kernel!,
+    threshold_kernel!,
+    gpu_semiring_spmv,
+    gpu_semiring_spmm,
+    gpu_semiring_reduce,
+    gpu_elementwise_mask,
+    gpu_threshold,
+    semiring_tag
 
 # ─── Kernel 1: Sparse Matrix-Vector (SpMV) ──────────────────────────────────
 # y[i] = ⊕_j (A[i,j] ⊗ x[j])  for nonzero entries only
@@ -35,8 +41,9 @@ export semiring_spmv_kernel!, semiring_spmm_kernel!,
 # CSR format: rowptr, colval, nzval
 # One thread per row.
 
-@kernel function semiring_spmv_kernel!(y, rowptr, colval, nzval, x,
-                                        @Const(sr_zero), @Const(sr_type))
+@kernel function semiring_spmv_kernel!(
+    y, rowptr, colval, nzval, x, @Const(sr_zero), @Const(sr_type)
+)
     i = @index(Global, Linear)
     row_start = rowptr[i]
     row_end = rowptr[i + 1] - 1
@@ -92,11 +99,11 @@ end
 
 # Map AbstractSemiring to integer tag
 semiring_tag(::SumProductSemiring) = Int32(1)
-semiring_tag(::MaxPlusSemiring)    = Int32(2)
-semiring_tag(::MinPlusSemiring)    = Int32(3)
-semiring_tag(::BooleanSemiring)    = Int32(4)
-semiring_tag(::PLNSemiring)        = Int32(5)
-semiring_tag(::CostSemiring)       = Int32(6)
+semiring_tag(::MaxPlusSemiring) = Int32(2)
+semiring_tag(::MinPlusSemiring) = Int32(3)
+semiring_tag(::BooleanSemiring) = Int32(4)
+semiring_tag(::PLNSemiring) = Int32(5)
+semiring_tag(::CostSemiring) = Int32(6)
 
 # ─── Kernel 1b: Sparse Matrix-Matrix (SpGEMM) ───────────────────────────────
 # C[i, j] = ⊕_k (A[i, k] ⊗ B[k, j])   for nonzero entries only
@@ -116,25 +123,31 @@ semiring_tag(::CostSemiring)       = Int32(6)
 # with semirings" promise — previously missing from this file (audit 2026-05-30).
 # Used by PathAlgebra.path_compose to lower `T = H(R ⊗ S)` to GPU.
 
-@kernel function semiring_spmm_kernel!(C,                 # dense output (m × n)
-                                        rowptr_A, colval_A, nzval_A,
-                                        rowptr_B, colval_B, nzval_B,
-                                        @Const(n_cols),   # n: columns of B (= cols of C)
-                                        @Const(sr_zero),
-                                        @Const(sr_type))
+@kernel function semiring_spmm_kernel!(
+    C,                 # dense output (m × n)
+    rowptr_A,
+    colval_A,
+    nzval_A,
+    rowptr_B,
+    colval_B,
+    nzval_B,
+    @Const(n_cols),   # n: columns of B (= cols of C)
+    @Const(sr_zero),
+    @Const(sr_type)
+)
     i = @index(Global, Linear)
     row_a_start = rowptr_A[i]
-    row_a_end   = rowptr_A[i + 1] - 1
+    row_a_end = rowptr_A[i + 1] - 1
     for ka in row_a_start:row_a_end
         k_idx = colval_A[ka]
-        a_ik  = nzval_A[ka]
+        a_ik = nzval_A[ka]
         row_b_start = rowptr_B[k_idx]
-        row_b_end   = rowptr_B[k_idx + 1] - 1
+        row_b_end = rowptr_B[k_idx + 1] - 1
         for kb in row_b_start:row_b_end
-            j     = colval_B[kb]
-            b_kj  = nzval_B[kb]
-            prod  = _sr_otimes(sr_type, a_ik, b_kj)
-            old   = @inbounds C[i, j]
+            j = colval_B[kb]
+            b_kj = nzval_B[kb]
+            prod = _sr_otimes(sr_type, a_ik, b_kj)
+            old = @inbounds C[i, j]
             @inbounds C[i, j] = _sr_oplus(sr_type, old, prod)
         end
     end
@@ -165,10 +178,9 @@ end
 # Repeated log2(n) times, halving the active range each pass — yields the
 # full ⊕-reduce. Replaces the "single thread does everything" hack the audit
 # flagged as the major perf gap in §5.2 promise 2 (fused reductions).
-@kernel function semiring_pairwise_reduce_kernel!(output, input,
-                                                   @Const(n),
-                                                   @Const(sr_zero),
-                                                   @Const(sr_type))
+@kernel function semiring_pairwise_reduce_kernel!(
+    output, input, @Const(n), @Const(sr_zero), @Const(sr_type)
+)
     i = @index(Global, Linear)
     # active threads cover positions 1..ceil(n/2)
     if 2 * i - 1 <= n
@@ -211,8 +223,9 @@ end
 Sparse matrix-vector multiply with semiring on GPU.
 Returns result vector y.
 """
-function gpu_semiring_spmv(sr::AbstractSemiring, rowptr, colval, nzval, x;
-                           backend=KernelAbstractions.CPU())
+function gpu_semiring_spmv(
+    sr::AbstractSemiring, rowptr, colval, nzval, x; backend=KernelAbstractions.CPU()
+)
     m = length(rowptr) - 1
     T = eltype(nzval)
     y = KernelAbstractions.zeros(backend, T, m)
@@ -243,23 +256,39 @@ row 1 formula `T[x,z] = H(Σ_y R[x,y] ⊗ S[y,z])`.
 Backend-neutral via KernelAbstractions; pass `backend=CUDABackend()` etc.
 for real GPU dispatch.
 """
-function gpu_semiring_spmm(sr::AbstractSemiring,
-                            rowptr_A, colval_A, nzval_A,
-                            rowptr_B, colval_B, nzval_B,
-                            n_cols::Integer;
-                            backend=KernelAbstractions.CPU())
+function gpu_semiring_spmm(
+    sr::AbstractSemiring,
+    rowptr_A,
+    colval_A,
+    nzval_A,
+    rowptr_B,
+    colval_B,
+    nzval_B,
+    n_cols::Integer;
+    backend=KernelAbstractions.CPU()
+)
     m = length(rowptr_A) - 1
     T = eltype(nzval_A)
     C = KernelAbstractions.zeros(backend, T, m, n_cols)
     fill!(C, T(szero(sr)))
 
     tag = semiring_tag(sr)
-    z   = T(szero(sr))
+    z = T(szero(sr))
 
     kernel = semiring_spmm_kernel!(backend, 256)
-    kernel(C, rowptr_A, colval_A, nzval_A,
-              rowptr_B, colval_B, nzval_B,
-              Int(n_cols), z, tag; ndrange=m)
+    kernel(
+        C,
+        rowptr_A,
+        colval_A,
+        nzval_A,
+        rowptr_B,
+        colval_B,
+        nzval_B,
+        Int(n_cols),
+        z,
+        tag;
+        ndrange=m
+    )
     KernelAbstractions.synchronize(backend)
     return C
 end
@@ -277,8 +306,7 @@ in-place hazards.
 Use `gpu_semiring_reduce(sr, v)` for the standard CPU dispatch; pass
 `backend=CUDABackend()` etc. for real GPU.
 """
-function gpu_semiring_reduce(sr::AbstractSemiring, v;
-                             backend=KernelAbstractions.CPU())
+function gpu_semiring_reduce(sr::AbstractSemiring, v; backend=KernelAbstractions.CPU())
     T = eltype(v)
     n = length(v)
     n == 0 && return T(szero(sr))
@@ -291,10 +319,10 @@ function gpu_semiring_reduce(sr::AbstractSemiring, v;
     copyto!(src, v)
     fill!(dst, T(szero(sr)))
 
-    tag       = semiring_tag(sr)
-    z         = T(szero(sr))
+    tag = semiring_tag(sr)
+    z = T(szero(sr))
     remaining = n
-    kernel    = semiring_pairwise_reduce_kernel!(backend, 256)
+    kernel = semiring_pairwise_reduce_kernel!(backend, 256)
 
     while remaining > 1
         half = cld(remaining, 2)

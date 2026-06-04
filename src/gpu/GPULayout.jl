@@ -6,6 +6,7 @@ GPU dispatch. Routes operations to sparse or dense kernels based on
 matrix properties.
 
 Components:
+
   - CSR/BCSR conversion from dense matrices
   - Densification routing via Tucker decomposition
   - Quantifier-as-reduction mapping
@@ -16,10 +17,18 @@ module GPULayout
 using ..Semirings: AbstractSemiring, szero
 using ..TuckerDecomposition: should_densify, tucker_decompose_2d, tucker_reconstruct_2d
 
-export CSRMatrix, dense_to_csr, csr_to_dense,
-       BCSRMatrix, dense_to_bcsr, bcsr_to_dense,
-       analyze_layout, recommend_strategy,
-       LayoutStrategy, SparseCSR, DenseTucker, DenseDirect
+export CSRMatrix,
+    dense_to_csr,
+    csr_to_dense,
+    BCSRMatrix,
+    dense_to_bcsr,
+    bcsr_to_dense,
+    analyze_layout,
+    recommend_strategy,
+    LayoutStrategy,
+    SparseCSR,
+    DenseTucker,
+    DenseDirect
 
 # ─── CSR Matrix ──────────────────────────────────────────────────────────────
 
@@ -36,8 +45,10 @@ struct CSRMatrix{T}
     n::Int32  # cols
 end
 
-"""Convert dense matrix to CSR."""
-function dense_to_csr(A::AbstractMatrix{T}) where T
+"""
+Convert dense matrix to CSR.
+"""
+function dense_to_csr(A::AbstractMatrix{T}) where {T}
     m, n = size(A)
     rowptr = Int32[1]
     colval = Int32[]
@@ -57,18 +68,22 @@ function dense_to_csr(A::AbstractMatrix{T}) where T
     return CSRMatrix{T}(rowptr, colval, nzval, Int32(m), Int32(n))
 end
 
-"""Convert CSR back to dense."""
-function csr_to_dense(csr::CSRMatrix{T}) where T
+"""
+Convert CSR back to dense.
+"""
+function csr_to_dense(csr::CSRMatrix{T}) where {T}
     A = zeros(T, csr.m, csr.n)
     for i in 1:csr.m
-        for idx in csr.rowptr[i]:csr.rowptr[i+1]-1
+        for idx in csr.rowptr[i]:(csr.rowptr[i + 1] - 1)
             A[i, csr.colval[idx]] = csr.nzval[idx]
         end
     end
     return A
 end
 
-"""Number of nonzeros."""
+"""
+Number of nonzeros.
+"""
 nnz(csr::CSRMatrix) = length(csr.nzval)
 
 # ─── BCSR Matrix (§5.1) ──────────────────────────────────────────────────────
@@ -80,18 +95,18 @@ Block Compressed Sparse Row format. §5.1: for structured sparsity patterns
 where nonzeros cluster in dense blocks of size (block_r × block_c).
 GPU-friendly: each block maps to a warp-local dense computation.
 
-  block_rowptr[i] — start of block-row i in block_colval / block_data
-  block_colval[k] — block-column index of block k
-  block_data[k]   — dense (block_r × block_c) array for block k
+block_rowptr[i] — start of block-row i in block_colval / block_data
+block_colval[k] — block-column index of block k
+block_data[k]   — dense (block_r × block_c) array for block k
 """
 struct BCSRMatrix{T}
-    block_rowptr :: Vector{Int32}   # length = n_block_rows + 1
-    block_colval :: Vector{Int32}   # length = n_blocks
-    block_data   :: Vector{Matrix{T}} # each entry = block_r × block_c dense matrix
-    m :: Int32   # full matrix rows
-    n :: Int32   # full matrix cols
-    block_r :: Int32
-    block_c :: Int32
+    block_rowptr::Vector{Int32}   # length = n_block_rows + 1
+    block_colval::Vector{Int32}   # length = n_blocks
+    block_data::Vector{Matrix{T}} # each entry = block_r × block_c dense matrix
+    m::Int32   # full matrix rows
+    n::Int32   # full matrix cols
+    block_r::Int32
+    block_c::Int32
 end
 
 """
@@ -101,22 +116,22 @@ end
 Blocks where all entries are zero are dropped. Partial blocks at boundary
 are zero-padded to full block size.
 """
-function dense_to_bcsr(A::AbstractMatrix{T}, block_r::Int, block_c::Int) where T
+function dense_to_bcsr(A::AbstractMatrix{T}, block_r::Int, block_c::Int) where {T}
     m, n = size(A)
     n_br = cld(m, block_r)  # number of block-rows
     n_bc = cld(n, block_c)  # number of block-cols
 
     block_rowptr = Int32[1]
     block_colval = Int32[]
-    block_data   = Matrix{T}[]
+    block_data = Matrix{T}[]
 
     z = zero(T)
     for bi in 1:n_br
         r_start = (bi - 1) * block_r + 1
-        r_end   = min(bi * block_r, m)
+        r_end = min(bi * block_r, m)
         for bj in 1:n_bc
             c_start = (bj - 1) * block_c + 1
-            c_end   = min(bj * block_c, n)
+            c_end = min(bj * block_c, n)
             block = zeros(T, block_r, block_c)
             has_nz = false
             for ii in r_start:r_end, jj in c_start:c_end
@@ -133,8 +148,15 @@ function dense_to_bcsr(A::AbstractMatrix{T}, block_r::Int, block_c::Int) where T
         end
         push!(block_rowptr, Int32(length(block_colval) + 1))
     end
-    BCSRMatrix{T}(block_rowptr, block_colval, block_data,
-                  Int32(m), Int32(n), Int32(block_r), Int32(block_c))
+    BCSRMatrix{T}(
+        block_rowptr,
+        block_colval,
+        block_data,
+        Int32(m),
+        Int32(n),
+        Int32(block_r),
+        Int32(block_c)
+    )
 end
 
 """
@@ -142,16 +164,16 @@ end
 
 Reconstruct dense matrix from BCSR. Inverse of dense_to_bcsr.
 """
-function bcsr_to_dense(bcsr::BCSRMatrix{T}) where T
+function bcsr_to_dense(bcsr::BCSRMatrix{T}) where {T}
     A = zeros(T, bcsr.m, bcsr.n)
     n_br = length(bcsr.block_rowptr) - 1
     for bi in 1:n_br
         r_start = (bi - 1) * Int(bcsr.block_r) + 1
-        for idx in bcsr.block_rowptr[bi]:bcsr.block_rowptr[bi+1]-1
-            bj      = Int(bcsr.block_colval[idx])
+        for idx in bcsr.block_rowptr[bi]:(bcsr.block_rowptr[bi + 1] - 1)
+            bj = Int(bcsr.block_colval[idx])
             c_start = (bj - 1) * Int(bcsr.block_c) + 1
-            blk     = bcsr.block_data[idx]
-            for ii in 1:size(blk,1), jj in 1:size(blk,2)
+            blk = bcsr.block_data[idx]
+            for ii in 1:size(blk, 1), jj in 1:size(blk, 2)
                 ri = r_start + ii - 1
                 ci = c_start + jj - 1
                 ri <= bcsr.m && ci <= bcsr.n || continue
@@ -164,22 +186,30 @@ end
 
 n_blocks(bcsr::BCSRMatrix) = length(bcsr.block_colval)
 
-"""Fill ratio."""
+"""
+Fill ratio.
+"""
 fill_ratio(csr::CSRMatrix) = nnz(csr) / (Float64(csr.m) * csr.n)
 
 # ─── Layout Strategy ─────────────────────────────────────────────────────────
 
 abstract type LayoutStrategy end
 
-"""Use sparse CSR format (SpMV/SpGEMM kernels)."""
+"""
+Use sparse CSR format (SpMV/SpGEMM kernels).
+"""
 struct SparseCSR <: LayoutStrategy end
 
-"""Use Tucker-decomposed dense format (dense einsum kernels)."""
+"""
+Use Tucker-decomposed dense format (dense einsum kernels).
+"""
 struct DenseTucker <: LayoutStrategy
     rank::Int
 end
 
-"""Use direct dense format (standard matmul)."""
+"""
+Use direct dense format (standard matmul).
+"""
 struct DenseDirect <: LayoutStrategy end
 
 # ─── Layout Analysis ─────────────────────────────────────────────────────────
@@ -218,6 +248,7 @@ end
     recommend_strategy(fill, eff_rank, min_dim) → LayoutStrategy
 
 Heuristic routing:
+
   - fill < 0.1: SparseCSR (sparse kernels efficient)
   - fill 0.1-0.5 and low rank: DenseTucker (compress then dense)
   - fill > 0.5: DenseDirect (already dense)
