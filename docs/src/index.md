@@ -26,9 +26,9 @@ It provides:
 
 This is a faithful **reference port** of the paper's algebra (correctness over scale); the
 dense→sparse-output kernel rewrite is a workload-driven future decision. See
-[`docs/AUDIT_2026-06-04.md`](https://github.com/sivaji1012/MORKTensorNetworks/blob/main/docs/AUDIT_2026-06-04.md)
+[`docs/AUDIT_2026-06-04.md`](https://github.com/CognitiveSubstratesAI/MORKTensorNetworks/blob/main/docs/AUDIT_2026-06-04.md)
 for the full finding-by-finding audit and
-[`docs/TODO.md`](https://github.com/sivaji1012/MORKTensorNetworks/blob/main/docs/TODO.md)
+[`docs/TODO.md`](https://github.com/CognitiveSubstratesAI/MORKTensorNetworks/blob/main/docs/TODO.md)
 for tracked open items.
 
 Tests: `Pkg.test` 129/129 (incl. Aqua quality checks).
@@ -37,7 +37,7 @@ Tests: `Pkg.test` 129/129 (incl. Aqua quality checks).
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/sivaji1012/MORKTensorNetworks")
+Pkg.add(url="https://github.com/CognitiveSubstratesAI/MORKTensorNetworks")
 ```
 
 See [Architecture](architecture.md) for the layered design and how each layer maps to the
