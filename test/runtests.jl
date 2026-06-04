@@ -450,6 +450,27 @@ end
         @test params.levels[1].W1 == W1_before            # FFN frozen (N4)
     end
 
+    # HRT-13 (audit 2026-06-04): top-level module exported hrt_down_project!/
+    # hrt_cross_attn!/hrt_gated_fuse! which are defined NOWHERE; the real ops
+    # (down_project/cross_attention/gated_fuse) weren't re-exported. Verify the real
+    # op names are now reachable via `using MORKTensorNetworks`.
+    @testset "HRT-13: HRT op names reachable via top-level exports" begin
+        for f in (down_project, cross_attention, gated_fuse, self_attention, feed_forward)
+            @test f isa Function
+        end
+    end
+
+    # G3 (audit 2026-06-04): tucker_reconstruct_3d was typed {T} requiring uniform eltype,
+    # but factors come back Float32 while the core inherits the input eltype → a Float64
+    # 3-D input MethodError'd. Verify Float64 3-D decompose+reconstruct now works.
+    @testset "G3: Tucker 3D accepts Float64 input (no eltype MethodError)" begin
+        A = rand(Float64, 5, 4, 3)
+        C, M, N, P, err = tucker_decompose_3d(A, 2, 2, 2)
+        A_recon = tucker_reconstruct_3d(C, M, N, P)   # was MethodError pre-fix
+        @test size(A_recon) == (5, 4, 3)
+        @test err >= 0.0
+    end
+
     @testset "path_universal — now exported and reachable" begin
         # Audit found path_universal was defined (line 196) but missing from
         # the export list — unreachable to consumers using `using ...PathAlgebra`.

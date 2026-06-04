@@ -1,9 +1,10 @@
 """
     PredictiveCodingTrainer.jl — Forward-only training for HRT via Predictive Coding
 
-MORK-Tensor-Networks paper §5.5: local, asynchronous weight updates using
+MORK-Tensor-Networks paper §6.4: local, asynchronous weight updates using
 predictive coding instead of backpropagation. Per Goertzel's recommendation:
 forward propagation only, no global gradients.
+(PC-8 fix, audit 2026-06-04: was mis-cited as "§5.5"; the PC training section is §6.4.)
 
 Algorithm (per level l):
 
@@ -20,13 +21,15 @@ Properties:
   - Compatible with ShardZipper: patch logging unchanged
   - Aligns with free energy minimization / active inference
 
-Reference: Goertzel "World Modeling in Hyperon for PRIMUS" v2 §7.7
+Reference: MORK-Tensor-Networks §6.4 (Goertzel, Oct 2025).
 """
 module PredictiveCodingTrainer
 
 using LinearAlgebra
-using ..HRT: HRTConfig, HRTState, HRTParams, HRTLevelParams, self_attention, feed_forward,
-    down_project
+# PC-7 (audit 2026-06-04): dropped unused imports `self_attention`, `feed_forward` — they
+# were imported but never called (a symptom of the N4 gap: PC was meant to locally train
+# attention/FFN weights but doesn't). Only `down_project` is actually used.
+using ..HRT: HRTConfig, HRTState, HRTParams, HRTLevelParams, down_project
 
 export PCTrainerConfig, pc_train_step!, pc_inner_loop!, hebbian_update!
 

@@ -101,6 +101,15 @@ function path_compose(
     raw = if backend === nothing
         semiring_matmul(sr, R, S)
     else
+        # F2 fix (audit 2026-06-04): the dense path asserts inner dims via semiring_matmul;
+        # the GPU branch did not, so cols(R) > rows(S) caused an OOB read of rowptr_S in
+        # the SpGEMM kernel. Assert here to match the dense path.
+        @assert size(R, 2) == size(S, 1) "path_compose: inner dims must match — R is $(size(R)), S is $(size(S))"
+        # NOTE (F1/G1): dense_to_csr drops entries via `!iszero && isfinite`, i.e. it
+        # treats numeric 0.0 as structural absence. That is correct for SumProduct/Boolean
+        # (szero=0) but WRONG for MaxPlus/PLN where 0.0 is a valid present edge (sone) and
+        # szero is ±Inf. The GPU compose path is therefore sound for SumProduct/Boolean
+        # only; MaxPlus/PLN GPU compose is not yet faithful (use the dense path). See TODO.
         # Convert dense → CSR, run SpGEMM, return dense output matrix.
         rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
         rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)

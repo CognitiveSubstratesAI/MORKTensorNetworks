@@ -91,6 +91,14 @@ end
 Two-pass join:
 Pass 1: compute within-shard blocks (no cross-shard data needed)
 Pass 2: add cross-shard boundary contributions
+
+CSJ-1 note (audit 2026-06-04): `shard_ranges` is used as BOTH the output-row partition
+(index i) AND the contraction-index partition (index p). That is only valid when A is
+square and the same partition applies to rows and the inner dimension — which holds for
+the relational case (composition of n×n adjacency matrices over n shared nodes, the
+package's actual use). For non-square A or row/inner partitions that differ, Pass 1's
+"within-shard columns" would be the wrong index set. The `if p <= k` guard at the inner
+loop is a symptom of this coupling. Documented; safe for the square relational workload.
 """
 function batched_boundary_join(
     sr::AbstractSemiring, A::AbstractMatrix, B::AbstractMatrix,

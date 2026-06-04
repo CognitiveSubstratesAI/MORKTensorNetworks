@@ -45,6 +45,26 @@ listed here. This file tracks what remains.
       Julia containers; SoA + Bumper arena + reusable key buffer per the audit's H3 note.
 - [ ] **H1 (gate)** — add an AllocCheck/JET CI gate on `semiring_matmul` once identity is set.
 
+## 🟠 From the per-category deep pass (verified, deferred)
+
+- [ ] **SZ-1/SZ-2 — partition correctness.** `_partition_recursive!` caps at byte-depth 8
+      (can cut mid-atom) and OR's the depth clause with the cost clause, so a deep dense
+      subtrie is emitted as one shard even when `cost > L_max` — violating the invariant
+      partition claims. Use an atom-boundary-aware split + honor L_max.
+- [ ] **SZ-3 — Capture Γ_s.** `capture_shard` records only the prefix, never a write-zipper
+      continuation → root cause of the missing O(1) reattach (M2). Add a Γ_s field + record it.
+- [ ] **SZ-4/SZ-5 — weighted reattach.** `patch_and_reattach!` writes `UNIT_VAL`, dropping
+      `rec.value`; `:update` ≡ `:insert` (no-op for weights). Needs a weight-valued trie
+      (ties to C4). Round-trip is currently lossy for weighted relations.
+- [ ] **G2 — GPU threshold semiring-aware.** `threshold_kernel!` hardcodes `>thresh` (C2 bug
+      on GPU). Thread the semiring szero + test `!isequal(x, szero)` before any GPU
+      existential projection is wired.
+- [ ] **F1/G1 — semiring-aware CSR.** `dense_to_csr` drops `0.0` (wrong for MaxPlus/PLN where
+      0=sone). GPU `path_compose` is SumProduct/Boolean-only until this is semiring-parameterized.
+- [ ] **CSJ-2/3/4 — cross-shard heuristics.** reshard threshold compares edge-count to area
+      (≈never merges sparse); `cross_shard_join` auto-path hardcodes boundary=avg÷10 → always
+      Batched (Halo/Reshard unreachable). Make boundary estimate data-driven.
+
 ## 🟢 Hygiene (low priority, safe anytime)
 
 - [ ] **L1** — make `ShardZipper`/`ECANTensorBridge` proper submodules (currently bare

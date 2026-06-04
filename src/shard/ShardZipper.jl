@@ -335,8 +335,15 @@ end
     run_shard!(space, prefix, kernel_fn!; l_max=1000) → Int
 
 Run the full ShardZipper 6-step workflow on one shard:
-capture → materialize → compute → patch & reattach.
+capture → materialize → compute → (step 6: adapt check) → patch & reattach.
 Returns patches applied.
+
+SZ-6 fix (audit 2026-06-04): `l_max` was previously accepted but unused, and step 6
+(Adapt) was never wired into the driver. Now `should_adapt` is evaluated BEFORE
+`patch_and_reattach!` (which empties the patch log — see M1), using `l_max`, and a
+reshard recommendation is surfaced via `@debug`. Actually resharding the trie is future
+work (depends on the Capture/Γ_s continuation, SZ-3/M2); this at least makes step 6 live
+and the param meaningful instead of silently dead.
 """
 function run_shard!(
     space, prefix::Vector{UInt8}, kernel_fn!::Function; l_max::Int=1000
@@ -344,6 +351,11 @@ function run_shard!(
     shard = capture_shard(space, prefix)
     materialize!(shard, space)
     compute!(shard, kernel_fn!)
+    # Step 6 (Adapt): check BEFORE reattach empties the patch log.
+    if should_adapt(shard, l_max)
+        @debug "ShardZipper: shard recommends resharding (size/chatty)" prefix =
+            shard.prefix size_cost = shard.size_cost n_patches = length(shard.patch_log) l_max
+    end
     n = patch_and_reattach!(shard, space)
     return n
 end

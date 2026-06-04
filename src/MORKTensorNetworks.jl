@@ -71,10 +71,13 @@ export should_densify
 # CrossShardJoin
 export HaloStrategy,
     BatchedBoundaryStrategy, ReshardStrategy, cross_shard_join, select_join_strategy
-# HRT — corrected names (audit C1: hrt_init→init_hrt, add init_state, add HRTConfig)
+# HRT — corrected names (audit C1 + HRT-13 2026-06-04). HRT-13: the previous list
+# exported hrt_down_project!/hrt_cross_attn!/hrt_gated_fuse! which are DEFINED NOWHERE
+# (HRT.jl defines down_project/cross_attention/gated_fuse). C1 fixed the init names but
+# left these op names wrong + undefined. Corrected to the real exported names.
 export HRTConfig, HRTParams, HRTState, init_hrt, init_state
-export hrt_forward!, hrt_down_project!, hrt_cross_attn!
-export hrt_gated_fuse!, hrt_reconstruction_loss
+export hrt_forward!, hrt_reconstruction_loss
+export down_project, cross_attention, gated_fuse, self_attention, feed_forward
 # PredictiveCodingTrainer
 export PCTrainerConfig, pc_train_step!, pc_inner_loop!, hebbian_update!
 # ShardZipper (top-level)

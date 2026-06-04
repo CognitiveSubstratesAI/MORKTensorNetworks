@@ -216,6 +216,15 @@ end
 # ─── Kernel 4: Threshold (Existential Quantification) ───────────────────────
 # out[i] = 1 if input[i] > threshold, else 0
 # H(Σ_y Φ[x,y]) — applied after reduction
+#
+# G2 note (audit 2026-06-04): this is a HARDCODED `> thresh` Heaviside — the exact C2
+# bug that was purged from the CPU side (Semirings.N2 deleted `threshold(x,t)=x>t`;
+# PathAlgebra._heaviside uses semiring-aware `isequal(x, szero(sr))`). On the GPU it is
+# NOT semiring-aware: under MaxPlus a valid path value -5.0 (≠ szero -Inf, so "present")
+# yields -5.0 > 0 → absent (wrong); under MinPlus szero +Inf > 0 is never thresholded out.
+# Latent because nothing currently routes path_project through this kernel (CPU _heaviside
+# is used). If GPU existential projection is wired, this MUST take the semiring (szero) and
+# test `!isequal(input[i], szero)` instead of `> thresh`. See TODO.
 
 @kernel function threshold_kernel!(out, input, @Const(thresh))
     i = @index(Global, Linear)

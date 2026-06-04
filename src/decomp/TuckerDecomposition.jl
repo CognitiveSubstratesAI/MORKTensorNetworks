@@ -57,13 +57,12 @@ function tucker_decompose_2d(
         # A ≈ M * C * N^T
         # A^T * M ≈ N * C^T  →  N = (A^T * M) * inv(C^T) ... but ALS is simpler:
 
-        # Step 1: Fix N, update M and C
-        # A * N ≈ M * C  →  M * C = A * N
+        # Step 1: Fix N, update M (orthogonal basis of A*N via QR).
+        # G4 (audit 2026-06-04): the QR R-factor was assigned to C here and then
+        # immediately overwritten by C = M'·A·N below — dead. Removed.
         AN = A * N  # m × rank
-        # Use QR to get orthogonal M
         qr_AN = qr(AN)
         M = Matrix(qr_AN.Q)[:, 1:rank]
-        C = Matrix(qr_AN.R)[1:rank, 1:rank]
 
         # Step 2: Fix M, update N
         # A^T * M ≈ N * C^T
@@ -200,9 +199,14 @@ end
 Reconstruct 3D tensor from Tucker factors:
 A[i,j,k] = Σ_{p,q,r} C[p,q,r] · M[i,p] · N[j,q] · P[k,r]
 """
+# G3 fix (audit 2026-06-04): signature was `{T}` requiring C/M/N/P to share one eltype.
+# But `_mode_unfold_svd` returns Float32 factors while the core `C = _ttm(A, M', …)`
+# inherits the INPUT eltype (Float64 for a Float64 tensor) — so a Float64 3-D input gave
+# Float64 C + Float32 factors → MethodError. Relaxed to untyped (matches the 2d/nd
+# reconstructors, which were already untyped); `_ttm` handles mixed eltypes via promotion.
 function tucker_reconstruct_3d(
-    C::AbstractArray{T, 3}, M::AbstractMatrix{T}, N::AbstractMatrix{T}, P::AbstractMatrix{T}
-) where {T}
+    C::AbstractArray{<:Any, 3}, M::AbstractMatrix, N::AbstractMatrix, P::AbstractMatrix
+)
     _ttm(_ttm(_ttm(C, M, 1), N, 2), P, 3)
 end
 
