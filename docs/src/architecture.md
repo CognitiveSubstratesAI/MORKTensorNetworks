@@ -71,6 +71,19 @@ GPU Boolean (`max`/`min`) and `threshold_kernel!` (`>thresh`) are not semiring-a
 non-{0,1} / tropical data (**H2 / G2 / L9**) — sound for the active SumProduct/Boolean path,
 documented for the rest.
 
+#### Dense-output SpGEMM — scale limit and the fail-loud guard
+
+`gpu_semiring_spmm` materializes a **dense** `m × n` output (it deliberately dodges the hard
+SpGEMM symbolic phase). Measured (R∘R at fixed average degree 27): output density falls as
+`d²/n` and the dense-vs-sparse memory waste grows linearly as `n/d²`. At small scale R² is
+50–76 % dense, so dense output is the *right* choice (waste ≈ 1×; the kernel's "competitive
+above ~10 %" note is empirically exact). But at metagraph scale it is a hard wall — a
+fly-brain-sized relation (n ≈ 139 k, degree 27) would need **77.6 GB dense vs 0.81 GB sparse
+(191×)**. The sparse-output variant (two-pass symbolic-then-numeric SpGEMM) is **not yet
+built** — pulled-by-need; nothing routes a contraction at that scale today. Meanwhile
+`gpu_semiring_spmm` takes a `max_dense_bytes` keyword (default 4 GiB) and **errors actionably**
+when the dense output would exceed it, rather than OOMing silently (**C4**).
+
 ### Cross-cutting — Local Learning (§6.4)
 To avoid global backprop, HRT trains via **Predictive Coding** (local error + Hebbian
 updates) in `src/hrt/PredictiveCodingTrainer.jl`. Currently only `W_down` + fusion gates
