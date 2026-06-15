@@ -124,6 +124,15 @@ semiring_tag(::CostSemiring) = Int32(6)
 # SpGEMM symbolic phase (which is hard to GPU well). For C sparsity above
 # ~10%, this is competitive; below that a sparse-output variant would win.
 #
+# MEASURED (2026-06-15, R∘R, fixed avg degree 27): output density falls as
+# d²/n and the dense-vs-sparse memory waste grows linearly as n/d². At small
+# scale R² is 50–76% dense → dense output is the right choice (waste 1×). But
+# at metagraph scale the dense m×n allocation becomes a hard wall (e.g. n≈139k
+# deg 27 → 77.6 GB dense vs 0.81 GB sparse, 191× waste). The sparse-output
+# variant is NOT yet built; until a workload pulls it, `gpu_semiring_spmm`
+# GUARDS against the silent OOM via `max_dense_bytes` (fails loud with a clear
+# message instead of allocating an unfittable dense output).
+#
 # This is the headline §5.2 kernel — the spec's "sparse einsums (SpGEMM-like)
 # with semirings" promise — previously missing from this file (audit 2026-05-30).
 # Used by PathAlgebra.path_compose to lower `T = H(R ⊗ S)` to GPU.
@@ -276,6 +285,13 @@ row 1 formula `T[x,z] = H(Σ_y R[x,y] ⊗ S[y,z])`.
 
 Backend-neutral via KernelAbstractions; pass `backend=CUDABackend()` etc.
 for real GPU dispatch.
+
+The output is **dense** `m × n` (this kernel dodges the SpGEMM symbolic phase).
+At high output-sparsity that is mostly zeros — a hard memory wall at metagraph
+scale. `max_dense_bytes` (default 4 GiB) guards against the silent OOM: the call
+errors with an actionable message if the dense output would exceed it. Raise it
+to force the allocation, or contract a smaller block. The sparse-output variant
+is not yet implemented (pulled-by-need; see the SpGEMM kernel notes above).
 """
 function gpu_semiring_spmm(
     sr::AbstractSemiring,
@@ -286,10 +302,22 @@ function gpu_semiring_spmm(
     colval_B,
     nzval_B,
     n_cols::Integer;
-    backend=KernelAbstractions.CPU()
+    backend=KernelAbstractions.CPU(),
+    max_dense_bytes::Real = 4 * 2^30,
 )
     m = length(rowptr_A) - 1
     T = eltype(nzval_A)
+    # Fail-loud guard — the dense m×n output is a hard memory wall at high output
+    # sparsity (metagraph scale). Error actionably rather than OOM silently.
+    dense_bytes = m * Int(n_cols) * sizeof(T)
+    if dense_bytes > max_dense_bytes
+        error("gpu_semiring_spmm: dense output would be " *
+              string(round(dense_bytes / 2^30; digits = 2)) * " GiB ($m × $n_cols × $(sizeof(T)) B), " *
+              "exceeding max_dense_bytes=" * string(round(max_dense_bytes / 2^30; digits = 2)) * " GiB. " *
+              "This SpGEMM materializes a DENSE output (it dodges the symbolic phase); at high output " *
+              "sparsity it is mostly zeros and hits a memory wall. The sparse-output variant is not yet " *
+              "built. Raise `max_dense_bytes` to force, or contract a smaller block.")
+    end
     C = KernelAbstractions.zeros(backend, T, m, n_cols)
     fill!(C, T(szero(sr)))
 

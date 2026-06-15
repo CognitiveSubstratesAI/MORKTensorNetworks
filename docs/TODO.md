@@ -38,7 +38,16 @@ listed here. This file tracks what remains.
 
 ## 🟡 Conditional on the C4 decision (only if "PRIMUS kernel")
 
-- [ ] **C4** — sparse-output SpGEMM (`gpu_semiring_spmm` currently allocates a dense output).
+- [ ] **C4** — sparse-output SpGEMM (`gpu_semiring_spmm` currently allocates a dense `m×n` output).
+      **MEASURED 2026-06-15** (R∘R, fixed avg degree 27): output density falls as `d²/n`, dense-vs-sparse
+      memory waste grows linearly as `n/d²`. Small scale (n≤1000) → R² is 50–76% **dense**, so the dense
+      kernel is the *right* choice (waste 1×; the "competitive >~10%" note is empirically exact, n=8000 hits
+      8.7%). But at metagraph scale it's a hard wall: n≈139k deg 27 → **77.6 GB dense vs 0.81 GB sparse (191×)**.
+      **Decision: DON'T build yet — no workload pulls it** (MORKTN SpGEMM runs at tiny scale; the connectome
+      goes through the zipper path, not MORKTN matmul). Stays pulled-by-need (activates if a tensor-logic
+      workload routes connectome-scale `Aᵏ` reachability through MORKTN). ✅ **Done now (the warranted part):**
+      `gpu_semiring_spmm` has a `max_dense_bytes` fail-loud guard (default 4 GiB) so it errors actionably
+      instead of OOMing silently at scale — see `SemiringKernels.jl`; tested in `runtests.jl`.
 - [ ] **H5** — represent `ECANState.W` as CSR; route spreading through
       `gpu_semiring_spmv(MaxPlusSemiring(), …)`; Hebbian update over existing links only.
 - [ ] **H3 (perf tail)** — the rebuilt `materialize!` is correct but still builds dense-ish

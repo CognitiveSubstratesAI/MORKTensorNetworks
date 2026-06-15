@@ -312,6 +312,20 @@ end
         end
     end
 
+    @testset "gpu_semiring_spmm fail-loud guard on oversized dense output" begin
+        using MORKTensorNetworks.SemiringKernels: gpu_semiring_spmm
+        using MORKTensorNetworks.PathAlgebra: dense_to_csr
+        using KernelAbstractions: CPU
+        R = Float64[0 1 0; 0 0 1; 0 0 0]
+        rp, cv, nv, _, n = dense_to_csr(R)
+        # 3×3×8 B = 72 B dense output; cap at 50 B → must error (not OOM silently).
+        @test_throws ErrorException gpu_semiring_spmm(
+            SumProductSemiring(), rp, cv, nv, rp, cv, nv, n; backend=CPU(), max_dense_bytes=50)
+        # under the (default-generous) cap, a small contraction still runs.
+        @test gpu_semiring_spmm(
+            SumProductSemiring(), rp, cv, nv, rp, cv, nv, n; backend=CPU()) isa AbstractMatrix
+    end
+
     @testset "path_compose with backend=CPU() dispatches via SpGEMM" begin
         # End-to-end: path_compose with backend kwarg should now route through
         # gpu_semiring_spmm (which was unreachable before — dead-import in the
