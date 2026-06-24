@@ -312,6 +312,22 @@ end
         end
     end
 
+    @testset "dense_to_csr zero_val — keeps semiring sone, drops szero (MaxPlus)" begin
+        using MORKTensorNetworks.PathAlgebra: dense_to_csr
+        # MaxPlus: szero=-Inf, sone=0.0. A 0.0 entry is MEANINGFUL (sone) and must NOT be dropped.
+        A = [0.0 -Inf; 5.0 -Inf]                       # (1,1)=sone 0.0, (2,1)=5.0, rest=szero -Inf
+        _, _, nz_def, _, _ = dense_to_csr(A)           # default zero_val=0.0 (SumProduct) — old behavior
+        @test !(0.0 in nz_def)                         # drops the 0.0 (would silently lose MaxPlus sone)
+        _, _, nz_mp, _, _ = dense_to_csr(A; zero_val=-Inf)   # szero(MaxPlus)
+        @test 0.0 in nz_mp                             # sone kept — the fix
+        @test 5.0 in nz_mp
+        @test !(-Inf in nz_mp)                         # szero dropped
+        @test length(nz_mp) == 2
+        # GPULayout copy returns a CSRMatrix but carries the same kwarg
+        csr = MORKTensorNetworks.GPULayout.dense_to_csr(A; zero_val=-Inf)
+        @test 0.0 in csr.nzval && !(-Inf in csr.nzval)
+    end
+
     @testset "gpu_semiring_spmm fail-loud guard on oversized dense output" begin
         using MORKTensorNetworks.SemiringKernels: gpu_semiring_spmm
         using MORKTensorNetworks.PathAlgebra: dense_to_csr

@@ -46,24 +46,28 @@ struct CSRMatrix{T}
 end
 
 """
-Convert dense matrix to CSR (returns (rowptr, colval, nzval, m, n) tuple).
+Convert dense matrix to CSR (returns a `CSRMatrix`).
+
+`zero_val` is the semiring's structural zero — entries `== zero_val` are dropped as absence.
+Defaults to `zero(T)` (correct for SumProduct/Boolean). For MaxPlus/MinPlus/PLN pass `szero(sr)`
+(`-Inf`/`+Inf`) so the semiring `sone` (`0.0`) is NOT mistaken for absence and dropped. (The
+`isfinite` guard additionally drops NaN/±Inf as numerical safety.)
 
 L8 note (audit 2026-06-04): a second `dense_to_csr` exists in PathAlgebra.jl with the
 same signature/return shape. They live in separate submodules (no name clash) but are
 duplicate logic. Consolidate onto one if a shared CSR utility module is introduced;
 left separate here to avoid cross-module coupling for a hygiene-only change.
 """
-function dense_to_csr(A::AbstractMatrix{T}) where {T}
+function dense_to_csr(A::AbstractMatrix{T}; zero_val::T=zero(T)) where {T}
     m, n = size(A)
     rowptr = Int32[1]
     colval = Int32[]
     nzval = T[]
 
-    z = zero(T)
     for i in 1:m
         for j in 1:n
             v = A[i, j]
-            if v != z && isfinite(v)
+            if v != zero_val && isfinite(v)
                 push!(colval, Int32(j))
                 push!(nzval, v)
             end

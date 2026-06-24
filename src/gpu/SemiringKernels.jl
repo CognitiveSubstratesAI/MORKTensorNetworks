@@ -387,7 +387,11 @@ end
 """
     gpu_elementwise_mask(val, mask; backend=CPU())
 
-Hadamard product: out[i] = val[i] * mask[i]
+Hadamard product: out[i] = val[i] * mask[i].
+
+SCOPE: numeric / SumProduct-Boolean semantics only (mask ∈ {0,1}, `*` = arithmetic). NOT
+semiring-generic — for MaxPlus/MinPlus/PLN, "restriction" must write `szero(sr)` for masked-out
+entries (multiplying by 0 yields 0, not the semiring zero). Use a semiring-aware op there.
 """
 function gpu_elementwise_mask(val, mask; backend=KernelAbstractions.CPU())
     n = length(val)
@@ -403,7 +407,11 @@ end
 """
     gpu_threshold(v, thresh=0; backend=CPU())
 
-Heaviside threshold: out[i] = v[i] > thresh ? 1 : 0
+Heaviside threshold: out[i] = v[i] > thresh ? 1 : 0.
+
+SCOPE: Boolean projection in SumProduct units — emits `one/zero(eltype)` (1.0/0.0), NOT
+`sone/szero(sr)`. NOT semiring-generic: for MaxPlus/MinPlus the {1,0} output must be reinterpreted
+(sone=0.0, szero=∓Inf) and the `>` direction reconsidered (MinPlus orders the other way).
 """
 function gpu_threshold(v, thresh=zero(eltype(v)); backend=KernelAbstractions.CPU())
     n = length(v)

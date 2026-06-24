@@ -37,7 +37,10 @@ export path_compose,
 """
 Dense matrix → CSR conversion.
 """
-function dense_to_csr(A::AbstractMatrix{T}) where {T}
+# `zero_val` = the semiring structural zero (entries == zero_val dropped as absence). Default
+# `zero(T)` (SumProduct/Boolean). For MaxPlus/MinPlus/PLN pass `szero(sr)` (±Inf) so `sone` (0.0)
+# is not mistaken for absence; the `isfinite` guard drops NaN/±Inf.
+function dense_to_csr(A::AbstractMatrix{T}; zero_val=zero(T)) where {T}
     m, n = size(A)
     rowptr = Int32[1]
     colval = Int32[]
@@ -45,7 +48,7 @@ function dense_to_csr(A::AbstractMatrix{T}) where {T}
 
     for i in 1:m
         for j in 1:n
-            if !iszero(A[i, j]) && isfinite(A[i, j])
+            if A[i, j] != zero_val && isfinite(A[i, j])
                 push!(colval, Int32(j))
                 push!(nzval, A[i, j])
             end
