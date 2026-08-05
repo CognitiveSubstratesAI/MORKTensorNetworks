@@ -66,6 +66,32 @@ operator — checked before writing this, because the previous implementation ha
     "a loop can learn to counterfeit its own metabolic support" — which is precisely what
     copying a neighbour's STI without debiting the neighbour does.
 
+⚠️ IF YOU HAVE JUST READ HYPERON WHITEPAPER v5 §8.4 AND ARE ABOUT TO REMOVE CONSERVATION — DON'T.
+Read §8.6.1 first. The two whitepaper editions differ, and v5 hands the authority back to exactly the
+object this file operates on:
+
+  2025 §5.4.1 / §5.3.1 / §5.4 AGREE emphatically — "conservation of probability in ECAN (where STI/LTI
+    values represent probabilistic importance measures that must sum to unity across the attentional
+    focus)"; "the incompressibility constraint (∇·u = 0) enforces strict budget conservation";
+    "maintains exact conservation (no magical creation/destruction of signal)".
+  v5 §8.4 QUALIFIES the FLUID formulation — the transported density ρ(t,x) ≥ 0 is "explicitly not
+    identified directly with signed STI/LTI"; it comes from a declared reconstruction map
+    ρ = R(STI, LTI, a). §8.4.1: "∇·u = 0 preserves volume but does not by itself conserve total mass";
+    conservation holds "only when the net source is zero" (Eq. 32), and a fixed global ECAN budget "is
+    therefore enforced by balanced source terms or explicit renormalization".
+  v5 §8.6.1 RESOLVES IT — "ECAN's discrete ledger remains authoritative; conservation/budget balance
+    checked at the ledger boundary and via Eq. 32."
+
+v5's qualification is about the CONTINUOUS fluid approximation, where a divergence-free velocity field
+does not by itself conserve mass. This file is not that. `v' = Dv` with D left-stochastic IS the
+discrete ledger, and its conservation is exact by column-sum, not inherited from an incompressibility
+assumption. So §8.4 does not license removing it — §8.6.1 asks for precisely the ledger-boundary check
+the test suite performs (`test/runtests.jl`, 20 compounding steps, economic scale, negative STI).
+
+Note also: "left-stochastic" appears in NEITHER whitepaper edition (grep, zero hits). That is SILENCE,
+not contradiction — the four sources this file rests on are named below and none of them is the
+whitepaper. Do not "reconcile" this file to the whitepaper by weakening the operator.
+
 §5.4 specifies importance spreading AS A TENSOR OPERATION already:
 
     v' = D v
