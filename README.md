@@ -19,7 +19,7 @@ MORK stores knowledge as a large shared trie (PathMap). This package bridges tha
 2. **ShardZipper** — extracts bounded trie pieces (shards) into flat GPU-friendly CSR/BCSR arrays, runs kernels, reattaches results in O(1)
 3. **Semiring-parameterized kernels** — one kernel set covers Boolean reachability, path counting, Viterbi best-path, and PLN truth values
 4. **HRT** — Hierarchical Resolution Transformer mapped onto MORK + ShardZipper
-5. **ECAN tensor bridge** — STI spreading as (max,+) matmul; Hebbian weight updates; attention fund rent/wage
+5. **ECAN tensor bridge** — conservative STI spreading `v' = Dv` with D left-stochastic (AGI-2009 §5.4). Policy lives in `Core/lib/ecan/*.metta`, not here
 
 ## Package structure
 
@@ -40,7 +40,7 @@ src/
     HRT.jl                # §6    Multi-resolution pyramid + cross-resolution attention + gated fusion
     PredictiveCodingTrainer.jl # §6.4 Local Hebbian training (no global backprop)
   ecan/
-    ECANTensorBridge.jl   # §7.3  ECAN STI spreading + Hebbian + attention fund
+    ECANTensorBridge.jl   # AGI-2009 §5.4 — NUMERIC KERNEL ONLY; logic lives in Core/lib/ecan/
 ```
 
 ## Core concepts
@@ -98,6 +98,15 @@ gpu_threshold(output, input, 0.0f0; backend=CUDABackend())
 
 ### ECAN tensor bridge (AGI-2009 §5.4)
 
+> 🛑 **ECAN logic is owned by `Core/lib/ecan/*.metta`, not by this package.** This is a numeric
+> kernel. Every policy parameter is a **required argument with no default** — deliberately, so
+> nothing here can become a second source of truth for a constant Core already owns. Read the
+> banner at the top of `src/ecan/ECANTensorBridge.jl` before adding anything: the "reimplement
+> Core's ECAN in Julia" mistake has been made **twice** in that file, and the second time
+> duplicated `combine-prob-vectors` (which already existed) and hardcoded `0.05` where Core says
+> `0.5`. MeTTa rules are atoms the system can rewrite at runtime — `ECAN_Policies.metta:62`,
+> *"Spreading Parameters (overridden by self-evolution)"*. Julia constants cannot self-evolve.
+
 Conservative importance spreading, `v' = Dv`, over the (+,×) semiring. **D** is the Hebbian
 connection matrix column-normalised to be **left-stochastic**, so `Σ STI` is conserved exactly —
 the invariant AGI-2009 §3.2 calls *"the key dynamical difference from an ordinary attractor
@@ -109,23 +118,30 @@ state = ECANState(n)                           # ECANState{Int}; ECANState([:a,:
 state.C = ecan_build_weight_matrix(links, n)   # Hebbian C[src,dst]; negative ⇒ inverse-Hebbian
 state.S = ecan_build_weight_matrix(edges, n)   # structural incidence (optional; all-zero ⇒ skip)
 
-# Spreading: v' = Dv, left-stochastic ⇒ Σ STI conserved. max_spread = Core's 0.3.
-# With S set, Hebbian takes ≤ hebbian_max_allocation of the budget and incidence takes the rest.
-ecan_sti_spread!(state; max_spread=0.3f0, hebbian_max_allocation=0.05f0)
+# Policy MUST come from Core's MeTTa atoms — these are required, and these are the live values:
+#   ECAN_Policies.metta:67  (max-spread-percentage)             0.3
+#   ECAN_Policies.metta:68  (hebbian-max-allocation-percentage) 0.5   ← NOT upstream's 0.05
+max_spread, heb_alloc = 0.3f0, 0.5f0
+
+# Spreading: v' = Dv, left-stochastic ⇒ Σ STI conserved.
+# With S set, Hebbian takes ≤ heb_alloc of the budget and incidence takes the rest.
+ecan_sti_spread!(state; max_spread, hebbian_max_allocation=heb_alloc)
 
 # Two tiers, as a column mask — upstream's AF/WA diffusion agents. A non-source atom gets an
 # identity column, so it keeps its STI and pays nobody; conservation holds per tier.
-ecan_sti_spread!(state; sources=ecan_attentional_focus(state))  # AFImportanceDiffusionAgent
-ecan_sti_spread!(state; sources=ecan_below_focus(state))        # WAImportanceDiffusionAgent
+af = ecan_attentional_focus(state, 0.5f0)        # AFImportanceDiffusionAgent
+ecan_sti_spread!(state; max_spread, hebbian_max_allocation=heb_alloc, sources=af)
 
 # Forgetting is a SEPARATE, deliberately non-conservative step.
 ecan_apply_decay!(state, 0.99f0)
 
 # Hebbian weight update  ΔC[x,y] = η × STI[x] × STI[y]  (existing links only)
-ecan_hebbian_update!(state; η=0.01f0)
+ecan_hebbian_update!(state, 0.01f0, 0.99f0)      # η, decay — both required
 
 # Rent/wage. Piping rent into wages is what makes the cycle conserve — there is no fund.
-rent = ecan_collect_rent!(state; af_threshold=0.5f0, rent_rate=0.1f0)
+# ⚠️ Core's rent is TWO-TIER and charges LTI as well (collect-wa-rent! / collect-af-rent!,
+#    core_logic.metta:223,233). This single-tier STI-only version is a bridge-side gap.
+rent = ecan_collect_rent!(state, 0.5f0, 0.1f0)   # af_threshold, rent_rate — both required
 ecan_distribute_wages!(state, rent)
 ```
 

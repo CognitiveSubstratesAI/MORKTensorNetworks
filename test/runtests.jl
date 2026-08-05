@@ -202,6 +202,13 @@ end
     # transposed edges, and discarding each atom's own STI. A test that cannot fail for the
     # defect it is meant to guard is the reason that survived from 2026-05-10 to 2026-08-05.
     @testset "ECAN tensor bridge — AGI-2009 §5.4" begin
+        # Policy comes from Core, NOT from this package. These MUST equal the MeTTa atoms in
+        # Core/lib/ecan/ECAN_Policies.metta — :67 (max-spread-percentage) and
+        # :68 (hebbian-max-allocation-percentage). The Julia side deliberately has no defaults,
+        # so a test is the only place a value appears, and it appears once, cited.
+        # ⚠️ 0.5, not upstream metta-attention's 0.05 — Core is the alignment target.
+        MAXSPREAD = 0.3f0
+        HEBALLOC = 0.5f0
         n = 4
         links = [(1, 2, 0.5f0), (2, 3, 0.4f0), (3, 4, 0.3f0), (4, 1, 0.2f0)]
 
@@ -215,7 +222,8 @@ end
         @testset "D is LEFT-STOCHASTIC — every column sums to 1" begin
             # This is the property that makes conservation hold; assert it directly rather than
             # inferring it from a conserved sum on one lucky input.
-            D = ecan_build_diffusion_matrix(ecan_build_weight_matrix(links, n))
+            D = ecan_build_diffusion_matrix(ecan_build_weight_matrix(links, n);
+                                            max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
             for j in 1:n
                 @test sum(D[:, j]) ≈ 1.0f0 atol = 1e-5
             end
@@ -237,7 +245,7 @@ end
             state = ECANState(3)
             state.sti = Float32[5.0, 0.0, 0.0]
             state.C = ecan_build_weight_matrix([(2, 3, 1.0f0)], 3)   # atom 1 is isolated
-            ecan_sti_spread!(state)
+            ecan_sti_spread!(state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
             @test state.sti[1] ≈ 5.0f0 atol = 1e-5
         end
 
@@ -249,7 +257,7 @@ end
             state.C = ecan_build_weight_matrix(links, n)
             before = sum(state.sti)
             for _ in 1:20                       # compounding would expose any per-step leak
-                ecan_sti_spread!(state)
+                ecan_sti_spread!(state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
                 @test sum(state.sti) ≈ before atol = 1e-4
             end
 
@@ -265,7 +273,7 @@ end
             state.sti = Float32[100000.0, 10000.0, 10.0, -50.0]
             state.C = ecan_build_weight_matrix(links, n)
             before = sum(state.sti)
-            ecan_sti_spread!(state)
+            ecan_sti_spread!(state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
             @test sum(state.sti) ≈ before rtol = 1e-5
             @test maximum(state.sti) > 1.0f0        # not clamped to a unit interval
             @test any(state.sti .< 0.0f0)           # debt survives a spread step
@@ -275,7 +283,7 @@ end
             state = ECANState(2)
             state.sti = Float32[1.0, 0.0]
             state.C = ecan_build_weight_matrix([(2, 1, -1.0f0)], 2)  # negative 2→1 ⇒ flows 1→2
-            ecan_sti_spread!(state)
+            ecan_sti_spread!(state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
             @test state.sti[2] > 0.0f0
             @test sum(state.sti) ≈ 1.0f0 atol = 1e-5
         end
@@ -304,14 +312,15 @@ end
             @test sum(D4[:, 1]) ≈ 1.0f0 atol = 1e-5
 
             # with no structural neighbours the Hebbian vector keeps the whole budget
-            Dh = ecan_build_diffusion_matrix(C, zeros(Float32, 3, 3); max_spread=0.4f0)
+            Dh = ecan_build_diffusion_matrix(
+                C, zeros(Float32, 3, 3); max_spread=0.4f0, hebbian_max_allocation=0.05f0)
             @test Dh[2, 1] ≈ 0.4f0 atol = 1e-5
 
             # ...and conservation survives an actual spread through the combined operator
             st = ECANState(3)
             st.sti = Float32[1.0, 0.0, 0.0]
             st.C, st.S = C, S
-            ecan_sti_spread!(st; max_spread=0.4f0)
+            ecan_sti_spread!(st; max_spread=0.4f0, hebbian_max_allocation=0.05f0)
             @test sum(st.sti) ≈ 1.0f0 atol = 1e-5
             @test st.sti[3] > st.sti[2]        # structural got the larger share
         end
@@ -325,20 +334,22 @@ end
                     s.sti = Float32[0.9, 0.1, 0.2];
                     s.C = ecan_build_weight_matrix([(1, 2, 1.0f0), (3, 2, 1.0f0)], 3); s)
 
-            @test ecan_attentional_focus(mk(); af_threshold=0.5f0) == [1]
-            @test ecan_below_focus(mk(); af_threshold=0.5f0) == [2, 3]
+            @test ecan_attentional_focus(mk(), 0.5f0) == [1]
+            @test ecan_below_focus(mk(), 0.5f0) == [2, 3]
 
             # AF tier: only atom 1 spreads, so atom 3 must be untouched
             af = mk()
             before = sum(af.sti)
-            ecan_sti_spread!(af; sources=ecan_attentional_focus(af; af_threshold=0.5f0))
+            ecan_sti_spread!(af; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
+                             sources=ecan_attentional_focus(af, 0.5f0))
             @test af.sti[3] ≈ 0.2f0 atol = 1e-5
             @test af.sti[1] < 0.9f0
             @test sum(af.sti) ≈ before atol = 1e-5      # conservation holds per tier
 
             # WA tier: atom 1 is NOT a source, so it keeps its STI and atom 3 pays
             wa = mk()
-            ecan_sti_spread!(wa; sources=ecan_below_focus(wa; af_threshold=0.5f0))
+            ecan_sti_spread!(wa; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
+                             sources=ecan_below_focus(wa, 0.5f0))
             @test wa.sti[1] ≈ 0.9f0 atol = 1e-5
             @test wa.sti[3] < 0.2f0
             @test sum(wa.sti) ≈ before atol = 1e-5
@@ -348,10 +359,12 @@ end
 
             # an empty source set is a no-op, not an error or a wipe
             noop = mk()
-            ecan_sti_spread!(noop; sources=Int[])
+            ecan_sti_spread!(noop; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
+                             sources=Int[])
             @test noop.sti == Float32[0.9, 0.1, 0.2]
 
-            @test_throws ArgumentError ecan_sti_spread!(mk(); sources=[7])
+            @test_throws ArgumentError ecan_sti_spread!(
+                mk(); max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC, sources=[7])
         end
 
         @testset "atom_ids is concretely typed — no Any" begin
@@ -376,7 +389,7 @@ end
             state.sti = Float32[0.8, 0.3, 0.1, 0.6]
             state.C = ecan_build_weight_matrix(links, n)
             c12_before = state.C[1, 2]
-            ecan_hebbian_update!(state; η=0.1f0, decay=1.0f0)
+            ecan_hebbian_update!(state, 0.1f0, 1.0f0)
             @test state.C[1, 2] > c12_before
             @test state.C[2, 4] == 0.0f0        # absent link stays absent — no link creation
         end
@@ -384,7 +397,7 @@ end
         @testset "rent and wages" begin
             state = ECANState(n)
             state.sti = Float32[0.8, 0.3, 0.1, 0.6]
-            total_rent = ecan_collect_rent!(state; af_threshold=0.5f0, rent_rate=0.1f0)
+            total_rent = ecan_collect_rent!(state, 0.5f0, 0.1f0)
             @test total_rent > 0.0f0
             @test state.sti[1] < 0.8f0          # above threshold — paid
             @test state.sti[2] == 0.3f0         # below threshold — untouched

@@ -1,6 +1,47 @@
 """
 ECANTensorBridge.jl — ECAN Attention as Tensor Operations
 
+╔══════════════════════════════════════════════════════════════════════════════════════════════╗
+║ 🛑 STOP. READ THIS BEFORE ADDING ANYTHING TO THIS FILE.                                      ║
+║                                                                                              ║
+║ THE OWNER OF ECAN LOGIC IS `Core/lib/ecan/*.metta`. NOT THIS FILE.                           ║
+║ This file may contain a NUMERIC KERNEL and nothing else: given a matrix and a vector,        ║
+║ multiply them. No policy constants. No thresholds. No selection rules. No tiering.           ║
+║                                                                                              ║
+║ WHY, in one line: MeTTa rules are ATOMS IN A SPACE — the system can rewrite them at runtime. ║
+║ `Core/lib/ecan/ECAN_Policies.metta:62` says so verbatim: "Spreading Parameters (overridden   ║
+║ by self-evolution)". A Julia keyword default is invisible to PLN, MOSES, the supercompiler   ║
+║ and `attention-evolution-step!`. Policy written here is policy REMOVED from the cognitive    ║
+║ loop. That is not a style preference; it is the difference between a system that can modify  ║
+║ its own attention allocation and one that cannot.                                            ║
+║                                                                                              ║
+║ THIS MISTAKE HAS BEEN MADE TWICE IN THIS FILE. Do not make it a third time.                  ║
+║   2026-05-10  14d49fe  ECAN implemented here in Julia, from an internal TODO row, without    ║
+║                        anyone opening Core/lib/ecan/. Diverged from Core on four points.     ║
+║   2026-06-04  c30e8b3  An audit caught it and wrote INTO THIS FILE: "Core's MeTTa ECAN       ║
+║                        (Core/lib/ecan/) is the only ground truth available." Left open.      ║
+║   2026-08-05  74694fa  While FIXING the first instance, MORE policy was added here —         ║
+║                        including a reimplementation of Core's `combine-prob-vectors`         ║
+║                        (SpreadingActivation.metta:126) that ALREADY EXISTED, and a constant  ║
+║                        hardcoded at 0.05 when Core's own atom says 0.5. A 10x silent         ║
+║                        divergence, introduced on the day it was written, by someone who had  ║
+║                        read the audit note above and quoted the project's own                ║
+║                        "check what already exists" rule earlier in the same session.         ║
+║                                                                                              ║
+║ THE CHECK THAT WOULD HAVE CAUGHT ALL THREE — sixty seconds, before writing any ECAN code:    ║
+║     ls  ~/code/CognitiveSubstratesAI/Core/lib/ecan/                                          ║
+║     grep -rn "^(= (" Core/lib/ecan/ECAN_Policies.metta Core/lib/ecan/AttentionPolicies.metta ║
+║ If what you are about to write appears there, it is ALREADY IMPLEMENTED and you are about to ║
+║ build a duplicate that will drift. Reading upstream `metta-attention` is NOT a substitute —  ║
+║ Core is already a faithful port of it (SpreadingActivation.metta:3 cites it as its           ║
+║ reference), so "upstream has X and we don't" is a claim about Core, and must be checked      ║
+║ against Core.                                                                                ║
+║                                                                                              ║
+║ ⚠️ The parameters below are REQUIRED, deliberately — no defaults. A default here is a second ║
+║ source of truth for a policy that Core already owns, and the 0.05-vs-0.5 divergence is what  ║
+║ that costs. Pass them from the MeTTa side.                                                   ║
+╚══════════════════════════════════════════════════════════════════════════════════════════════╝
+
 Normative source: **Ikle', Pitt, Goertzel, Sellman, "Economic Attention Networks: Associative
 Memory and Resource Allocation for General Intelligence", AGI-2009**, §5.4 — extracted at
 `docs/specs/Algorithms/Ecan/economic_attention_networks_2009_spec.md`.
@@ -96,7 +137,38 @@ does not sum to the total, and an affine rescale does not commute with Dv. We ap
 which conserves Σ STI exactly and matches Core's treatment of raw STI as unbounded economic scale.
 Where the paper is internally inconsistent, Core's live semantics break the tie.
 
-STILL NOT IMPLEMENTED (unchanged by this commit, listed so nobody reads silence as parity):
+⚠️ WHAT CORE ALREADY HAS — DO NOT REIMPLEMENT ANY OF THIS HERE. Every line below was found in
+`Core/lib/ecan/` AFTER a Julia duplicate of it had been written. The list exists so the next
+session checks here first instead of repeating the search that produced the duplicate.
+
+  incident + Hebbian combination   `combine-prob-vectors`   SpreadingActivation.metta:126
+                                   documented at :9 as step 4 of the canonical algorithm, and at
+                                   :122-124 citing upstream's `combineIncidentAdjacentVectors`.
+                                   A Julia copy of this was written on 2026-08-05 as if it were a
+                                   gap. It was not a gap.
+  the Hebbian/incident split       `(hebbian-max-allocation-percentage) 0.5`
+                                   ECAN_Policies.metta:68 — note 0.5, NOT upstream's 0.05. The
+                                   Julia duplicate took upstream's value and disagreed with Core
+                                   by 10x from the moment it was written.
+  two-tier rent (WA + AF)          `collect-wa-rent!` core_logic.metta:223
+                                   `collect-af-rent!` core_logic.metta:233
+                                   `collect-all-wa-rent!` / `collect-all-af-rent!`
+                                   AttentionPolicies.metta:75,83, with rates
+                                   `(af-sti-rent-rate) 0.05` / `(af-lti-rent-rate) 0.02`
+  spreading policy constants       `(max-spread-percentage) 0.3`, `(max-spreading-depth) 3`,
+                                   `(spreading-decay-factor) 0.7`, `(spreading-threshold) 0.1`
+                                   ECAN_Policies.metta:64-68 — under the header
+                                   "Spreading Parameters (overridden by self-evolution)"
+  conservative transfer            `trade-sti!` SpreadingActivation.metta:60 — clamps to the
+                                   source's available STI, zero-sum
+  probability vectors              `incident-prob-vector` :79, `hebbian-prob-vector` :99,
+                                   `normalise-prob-vector` :111
+  funds, forgetting, AF, decay     core_logic.metta §3, Forgetting.metta (9 rules),
+                                   state_logic.metta (16 rules), AttentionPolicies.metta
+  fluid ECAN                       FluidECAN.metta — already present
+
+MISSING FROM THIS FILE (a bridge-side gap ONLY — Core has all of these; nothing here is a
+system-level gap, and a plan row saying otherwise is wrong):
 
   - NO ELAPSED-TIME DECAY IN THE WA SPREAD AMOUNT. Upstream's `calculateDiffusionAmountWA` is
     `getSti - diffusedValue(atom, maxSpread)` where `diffusedValue = sti × (1-decayRate)^elapsed`
@@ -232,8 +304,8 @@ POSTCONDITION: every column sums to 1 (to Float32 rounding), hence `Σ(Dv) = Σv
 function ecan_build_diffusion_matrix(
     C::AbstractMatrix{Float32},
     S::Union{Nothing,AbstractMatrix{Float32}}=nothing;
-    max_spread::Float32=0.3f0,
-    hebbian_max_allocation::Float32=0.05f0,
+    max_spread::Float32,                 # REQUIRED — Core: (max-spread-percentage)
+    hebbian_max_allocation::Float32,     # REQUIRED — Core: (hebbian-max-allocation-percentage)
 )
     n = size(C, 1)
     @assert size(C, 2) == n "C must be square; got $(size(C))"
@@ -359,8 +431,8 @@ plausible-looking shrink. Use [`ecan_apply_decay!`](@ref) explicitly.
 """
 function ecan_sti_spread!(
     state::ECANState;
-    max_spread::Float32=0.3f0,
-    hebbian_max_allocation::Float32=0.05f0,
+    max_spread::Float32,                 # REQUIRED — Core: (max-spread-percentage)
+    hebbian_max_allocation::Float32,     # REQUIRED — Core: (hebbian-max-allocation-percentage)
     sources::Union{Nothing,AbstractVector{Int}}=nothing,
 )::ECANState
     n = length(state.sti)
@@ -415,11 +487,11 @@ Feed either into [`ecan_sti_spread!`](@ref)'s `sources` to get upstream's two ti
 candidate set, not one stochastic draw from it. Sample it yourself if you want upstream's
 stochastic behaviour.
 """
-function ecan_attentional_focus(state::ECANState; af_threshold::Float32=0.5f0)::Vector{Int}
+function ecan_attentional_focus(state::ECANState, af_threshold::Float32)::Vector{Int}
     findall(>=(af_threshold), state.sti)
 end
 
-function ecan_below_focus(state::ECANState; af_threshold::Float32=0.5f0)::Vector{Int}
+function ecan_below_focus(state::ECANState, af_threshold::Float32)::Vector{Int}
     findall(<(af_threshold), state.sti)
 end
 
@@ -453,9 +525,7 @@ Also unlike Core: this is a plain symmetric product on RAW STI, where Core's
 `hebbian-conjunction` is an asymmetric affine map on NORMALISED STI. Retained as-is deliberately
 — this commit's scope is the transport operator, not the learning rule.
 """
-function ecan_hebbian_update!(
-    state::ECANState; η::Float32=0.01f0, decay::Float32=0.99f0
-)::ECANState
+function ecan_hebbian_update!(state::ECANState, η::Float32, decay::Float32)::ECANState
     n = length(state.sti)
     sti = state.sti
     C = state.C
@@ -484,7 +554,7 @@ has no fund field. Unless the caller feeds this return value to
 fund (core_logic.metta §3). See the file header's not-implemented list.
 """
 function ecan_collect_rent!(
-    state::ECANState; af_threshold::Float32=0.5f0, rent_rate::Float32=0.1f0
+    state::ECANState, af_threshold::Float32, rent_rate::Float32
 )::Float32
     total = 0.0f0
     for x in eachindex(state.sti)
