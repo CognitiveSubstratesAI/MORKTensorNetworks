@@ -67,6 +67,7 @@ export BCSRMatrix, dense_to_bcsr, bcsr_to_dense
 export ECANState, ecan_sti_spread!, ecan_hebbian_update!, ecan_apply_decay!
 export ecan_collect_rent!, ecan_distribute_wages!
 export ecan_build_weight_matrix, ecan_build_diffusion_matrix, ecan_sti_vector
+export ecan_attentional_focus, ecan_below_focus
 export should_densify
 # CrossShardJoin
 export HaloStrategy,

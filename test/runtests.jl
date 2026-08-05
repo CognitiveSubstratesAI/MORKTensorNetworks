@@ -280,6 +280,90 @@ end
             @test sum(state.sti) ≈ 1.0f0 atol = 1e-5
         end
 
+        @testset "structural incidence combines with Hebbian (7.3.4)" begin
+            # Upstream `combineIncidentAdjacentVectors`: Hebbian takes at most
+            # HEBBIAN_MAX_ALLOCATION_PERCENTAGE of a column's budget, structural incidence takes
+            # the rest. The column must still sum to 1 — the combination cannot break conservation.
+            C = ecan_build_weight_matrix([(1, 2, 1.0f0)], 3)          # Hebbian 1→2
+            S = ecan_build_weight_matrix([(1, 3, 1.0f0)], 3)          # structural 1→3
+            D = ecan_build_diffusion_matrix(C, S; max_spread=0.4f0, hebbian_max_allocation=0.05f0)
+            for j in 1:3
+                @test sum(D[:, j]) ≈ 1.0f0 atol = 1e-5
+            end
+            # of atom 1's 0.4 spread: 5% Hebbian to atom 2, 95% structural to atom 3
+            @test D[2, 1] ≈ 0.4f0 * 0.05f0 atol = 1e-5
+            @test D[3, 1] ≈ 0.4f0 * 0.95f0 atol = 1e-5
+
+            # the Hebbian share must NOT shrink as Hebbian links multiply — the upstream
+            # double-normalisation by nH (recorded as a divergence in the source) would make it
+            # decay as 1/nH², so pin the invariant that distinguishes the two readings
+            C4 = ecan_build_weight_matrix([(1, 2, 1.0f0), (1, 3, 1.0f0), (1, 4, 1.0f0)], 5)
+            S4 = ecan_build_weight_matrix([(1, 5, 1.0f0)], 5)
+            D4 = ecan_build_diffusion_matrix(C4, S4; max_spread=0.4f0, hebbian_max_allocation=0.05f0)
+            @test (D4[2, 1] + D4[3, 1] + D4[4, 1]) ≈ 0.4f0 * 0.05f0 atol = 1e-5
+            @test sum(D4[:, 1]) ≈ 1.0f0 atol = 1e-5
+
+            # with no structural neighbours the Hebbian vector keeps the whole budget
+            Dh = ecan_build_diffusion_matrix(C, zeros(Float32, 3, 3); max_spread=0.4f0)
+            @test Dh[2, 1] ≈ 0.4f0 atol = 1e-5
+
+            # ...and conservation survives an actual spread through the combined operator
+            st = ECANState(3)
+            st.sti = Float32[1.0, 0.0, 0.0]
+            st.C, st.S = C, S
+            ecan_sti_spread!(st; max_spread=0.4f0)
+            @test sum(st.sti) ≈ 1.0f0 atol = 1e-5
+            @test st.sti[3] > st.sti[2]        # structural got the larger share
+        end
+
+        @testset "WA/AF two-tier via source restriction (7.3.5)" begin
+            # Upstream runs two agents differing only in which atoms are SOURCES:
+            # AFImportanceDiffusionAgent draws from the focus, WAImportanceDiffusionAgent from
+            # getRandomAtomNotInAF. As a matrix that is a column mask, and a non-source column
+            # must be the identity — which keeps the operator left-stochastic.
+            mk() = (s = ECANState(3);
+                    s.sti = Float32[0.9, 0.1, 0.2];
+                    s.C = ecan_build_weight_matrix([(1, 2, 1.0f0), (3, 2, 1.0f0)], 3); s)
+
+            @test ecan_attentional_focus(mk(); af_threshold=0.5f0) == [1]
+            @test ecan_below_focus(mk(); af_threshold=0.5f0) == [2, 3]
+
+            # AF tier: only atom 1 spreads, so atom 3 must be untouched
+            af = mk()
+            before = sum(af.sti)
+            ecan_sti_spread!(af; sources=ecan_attentional_focus(af; af_threshold=0.5f0))
+            @test af.sti[3] ≈ 0.2f0 atol = 1e-5
+            @test af.sti[1] < 0.9f0
+            @test sum(af.sti) ≈ before atol = 1e-5      # conservation holds per tier
+
+            # WA tier: atom 1 is NOT a source, so it keeps its STI and atom 3 pays
+            wa = mk()
+            ecan_sti_spread!(wa; sources=ecan_below_focus(wa; af_threshold=0.5f0))
+            @test wa.sti[1] ≈ 0.9f0 atol = 1e-5
+            @test wa.sti[3] < 0.2f0
+            @test sum(wa.sti) ≈ before atol = 1e-5
+
+            # the two tiers are genuinely different operators
+            @test af.sti != wa.sti
+
+            # an empty source set is a no-op, not an error or a wipe
+            noop = mk()
+            ecan_sti_spread!(noop; sources=Int[])
+            @test noop.sti == Float32[0.9, 0.1, 0.2]
+
+            @test_throws ArgumentError ecan_sti_spread!(mk(); sources=[7])
+        end
+
+        @testset "atom_ids is concretely typed — no Any" begin
+            @test ECANState(3) isa ECANState{Int}
+            @test eltype(ECANState(3).atom_ids) === Int
+            sym = ECANState([:a, :b])
+            @test sym isa ECANState{Symbol}
+            @test eltype(sym.atom_ids) === Symbol
+            @test length(sym.sti) == 2
+            @test !(eltype(ECANState(3).atom_ids) === Any)
+        end
+
         @testset "decay is SEPARATE and is the only lossy step" begin
             state = ECANState(2)
             state.sti = Float32[1.0, 1.0]

@@ -105,11 +105,18 @@ neural network."* Matches upstream `metta-attention` (`tradeSti` is zero-sum) an
 `Core/lib/ecan/`.
 
 ```julia
-state = ECANState(n)
-state.C = ecan_build_weight_matrix(links, n)   # C[src,dst]; negative ⇒ inverse-Hebbian
+state = ECANState(n)                           # ECANState{Int}; ECANState([:a,:b]) fixes the id type
+state.C = ecan_build_weight_matrix(links, n)   # Hebbian C[src,dst]; negative ⇒ inverse-Hebbian
+state.S = ecan_build_weight_matrix(edges, n)   # structural incidence (optional; all-zero ⇒ skip)
 
 # Spreading: v' = Dv, left-stochastic ⇒ Σ STI conserved. max_spread = Core's 0.3.
-ecan_sti_spread!(state; max_spread=0.3f0)
+# With S set, Hebbian takes ≤ hebbian_max_allocation of the budget and incidence takes the rest.
+ecan_sti_spread!(state; max_spread=0.3f0, hebbian_max_allocation=0.05f0)
+
+# Two tiers, as a column mask — upstream's AF/WA diffusion agents. A non-source atom gets an
+# identity column, so it keeps its STI and pays nobody; conservation holds per tier.
+ecan_sti_spread!(state; sources=ecan_attentional_focus(state))  # AFImportanceDiffusionAgent
+ecan_sti_spread!(state; sources=ecan_below_focus(state))        # WAImportanceDiffusionAgent
 
 # Forgetting is a SEPARATE, deliberately non-conservative step.
 ecan_apply_decay!(state, 0.99f0)

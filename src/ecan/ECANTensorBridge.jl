@@ -98,19 +98,23 @@ Where the paper is internally inconsistent, Core's live semantics break the tie.
 
 STILL NOT IMPLEMENTED (unchanged by this commit, listed so nobody reads silence as parity):
 
-  - HEBBIAN LINKS ONLY. D is built from the Hebbian connection matrix C. Upstream diffuses along
-    BOTH structural incidence and Hebbian adjacency, combining the two probability vectors under
-    HEBBIAN_MAX_ALLOCATION_PERCENTAGE (`combineIncidentAdjacentVectors`); Core mirrors this
-    (`incident-prob-vector` + `hebbian-prob-vector`, SpreadingActivation.metta:79-140). A caller
-    wanting the structural half must fold it into C themselves.
-  - ONE TIER. Upstream has separate WA (whole-atomspace) and AF (attentional-focus) diffusion
-    agents, and Core's rent is likewise two-tier charging both STI and LTI. This is a single
-    undifferentiated sweep.
+  - NO ELAPSED-TIME DECAY IN THE WA SPREAD AMOUNT. Upstream's `calculateDiffusionAmountWA` is
+    `getSti - diffusedValue(atom, maxSpread)` where `diffusedValue = sti × (1-decayRate)^elapsed`
+    (attention-bank/…/stochastic-importance-diffusion.metta:109-119). At elapsed = 1 that equals
+    the AF amount `sti × MAX_SPREAD_PERCENTAGE`, which is what we implement; the compounding over
+    per-atom elapsed time needs timestamps `ECANState` does not carry.
+  - WA SOURCE SAMPLING IS NOT STOCHASTIC. `WAImportanceDiffusionAgent` draws sources via
+    `getRandomAtomNotInAF`; `ecan_below_focus` returns the whole non-AF candidate set. Sample it
+    yourself for upstream's behaviour.
+  - AF MEMBERSHIP IS THRESHOLD-ONLY — no rank rules, no caps, no `recentMaxSTI` normalisation.
   - NO FUND. Collected rent is returned to the caller rather than booked, so the rent/wage cycle
     only conserves if the caller pipes one into the other.
   - LTI carried but never updated; no VLTI; no link creation/removal, so topology is frozen;
     Hebbian update is a plain symmetric product where Core's `hebbian-conjunction` is an
     asymmetric affine map on normalised STI.
+  - RENT IS SINGLE-TIER. Core charges WA rent on all atoms plus AF rent on focus atoms, against
+    both STI and LTI. `ecan_collect_rent!` is one threshold-gated STI-only deduction. (The
+    two-tier split now exists for SPREADING, via `sources`, but not for rent.)
 
 This file is a CONSERVATIVE SPREADING KERNEL that agrees with Core and upstream on transport —
 not a full ECAN.
@@ -124,6 +128,7 @@ using LinearAlgebra
 export ECANState, ecan_sti_spread!, ecan_hebbian_update!, ecan_apply_decay!
 export ecan_collect_rent!, ecan_distribute_wages!
 export ecan_build_weight_matrix, ecan_build_diffusion_matrix, ecan_sti_vector
+export ecan_attentional_focus, ecan_below_focus
 
 # ─── Hebbian connection matrix C ─────────────────────────────────────────────
 
@@ -141,25 +146,39 @@ ECAN attention state as tensors:
              deliberate for small spaces — see the struct field comment.
   atom_ids — atom_ids[i] = identifier for index i.
 """
-mutable struct ECANState
+mutable struct ECANState{A}
     sti::Vector{Float32}      # RAW STI — unbounded, may be negative
     lti::Vector{Float32}      # carried; no update rule here (see header)
     C::Matrix{Float32}        # Hebbian connection matrix C[src,dst]; dense for small spaces
-    atom_ids::Vector{Any}     # atom_ids[i] = identifier for index i
+    S::Matrix{Float32}        # STRUCTURAL incidence S[src,dst]; all-zero ⇒ Hebbian-only spreading
+    atom_ids::Vector{A}       # atom_ids[i] = identifier for index i
 end
 
 """
-    ECANState(n) → ECANState
+    ECANState(n)            → ECANState{Int}
+    ECANState(atom_ids)     → ECANState{eltype(atom_ids)}
 
-Empty ECAN state for `n` atoms. STI and LTI zeroed; C zeroed (no links).
+Empty ECAN state. STI and LTI zeroed; C and S zeroed (no links).
+
+PARAMETRIC IN THE ID TYPE. `atom_ids` was `Vector{Any}`, which this project prohibits — an
+`Any`-typed container is a type-instability barrier and defeats dispatch on the identifier.
+Pass your own id vector to fix the type (`ECANState(Symbol[:a, :b])`,
+`ECANState(["atom1", "atom2"])`); `ECANState(n)` gives `ECANState{Int}` with ids `1:n`.
 
 `0` is the no-link value, not `-Inf`. `-Inf` was the (max,+) annihilator; under (+,×) the
 annihilator is `0`, and a Hebbian link of strength 0 contributes nothing to spreading, so the
 two readings coincide.
 """
-function ECANState(n::Int)
-    ECANState(zeros(Float32, n), zeros(Float32, n), zeros(Float32, n, n), Any[i for i in 1:n])
+function ECANState(atom_ids::Vector{A}) where {A}
+    n = length(atom_ids)
+    ECANState{A}(
+        zeros(Float32, n), zeros(Float32, n),
+        zeros(Float32, n, n), zeros(Float32, n, n),
+        atom_ids,
+    )
 end
+
+ECANState(n::Int) = ECANState(collect(1:n))
 
 """
     ecan_build_weight_matrix(links, n) → Matrix{Float32}
@@ -210,10 +229,17 @@ Per §5.4:
 POSTCONDITION: every column sums to 1 (to Float32 rounding), hence `Σ(Dv) = Σv` for any `v`.
 `max_spread` defaults to 0.3 = Core's `(max-spread-percentage)` (ECAN_Policies.metta:67).
 """
-function ecan_build_diffusion_matrix(C::AbstractMatrix{Float32}; max_spread::Float32=0.3f0)
+function ecan_build_diffusion_matrix(
+    C::AbstractMatrix{Float32},
+    S::Union{Nothing,AbstractMatrix{Float32}}=nothing;
+    max_spread::Float32=0.3f0,
+    hebbian_max_allocation::Float32=0.05f0,
+)
     n = size(C, 1)
     @assert size(C, 2) == n "C must be square; got $(size(C))"
     @assert 0.0f0 <= max_spread <= 1.0f0 "max_spread must lie in [0,1]; got $max_spread"
+    @assert 0.0f0 <= hebbian_max_allocation <= 1.0f0 "hebbian_max_allocation must lie in [0,1]"
+    S === nothing || @assert size(S) == (n, n) "S must match C; got $(size(S)) vs $(size(C))"
 
     D = zeros(Float32, n, n)
     for src in 1:n, dst in 1:n
@@ -224,6 +250,62 @@ function ecan_build_diffusion_matrix(C::AbstractMatrix{Float32}; max_spread::Flo
             D[dst, src] += c                      # forward: src pays dst
         else
             D[src, dst] += -c                     # inverse-Hebbian: dst pays src (§5.4)
+        end
+    end
+
+    # STRUCTURAL INCIDENCE (upstream `combineIncidentAdjacentVectors`). When S is supplied, the
+    # Hebbian vector is capped at `hebbian_max_allocation` of each column's budget and the
+    # structural-incidence vector takes the remainder, so the column still sums to 1 before the
+    # max_spread scaling below. Upstream:
+    #   hebbianDiffusionAvailable = HEBBIAN_MAX_ALLOCATION_PERCENTAGE × 1.0     (0.05)
+    #   hebbianProportion         = each Hebbian weight × hebbianMaximumLinkAllocation
+    #   incidentProportion        = each incident weight × (1 - hebbianDiffusionUsed)
+    #   final                     = concat(hebbianProportion, incidentProportion)
+    # and `probabilityVectorIncident` weights every structural neighbour equally at 1/nI.
+    #
+    # ⚠️ DELIBERATE DIVERGENCE, recorded rather than copied or silently corrected.
+    # Upstream normalises the Hebbian vector by nH TWICE: `probabilityVectorHebbianAjacent`
+    # (ImportanceDiffusionBase.metta:120-136) already sets maxAllocation = 1.0/atomCount, and
+    # `combineIncidentAdjacentVectors` (:145-166) then multiplies by
+    # hebbianMaximumLinkAllocation = HEBBIAN_MAX_ALLOCATION_PERCENTAGE/adajecentSize. The Hebbian
+    # share therefore scales as 0.05·(strength×confidence)/nH², i.e. it VANISHES as an atom gains
+    # Hebbian links — which cannot be the meaning of a constant named "MAX_ALLOCATION_PERCENTAGE".
+    # We apply the single normalisation the name implies, so the Hebbian share is at most
+    # `hebbian_max_allocation` regardless of nH. Not replicating an unexplained behaviour as if it
+    # were a contract; not quietly patching it either.
+    if S !== nothing
+        Sd = zeros(Float32, n, n)
+        for src in 1:n, dst in 1:n
+            src == dst && continue
+            S[src, dst] == 0.0f0 && continue
+            Sd[dst, src] += abs(S[src, dst])      # incidence is undirected-in-effect, never negative
+        end
+        for j in 1:n
+            heb = 0.0f0
+            inc = 0.0f0
+            for i in 1:n
+                i == j && continue
+                heb += D[i, j]
+                inc += Sd[i, j]
+            end
+            inc == 0.0f0 && continue              # no structural neighbours ⇒ Hebbian keeps the column
+            if heb > 0.0f0
+                # Hebbian normalised to at most `hebbian_max_allocation` of the budget...
+                hscale = hebbian_max_allocation / heb
+                for i in 1:n
+                    i != j && (D[i, j] *= hscale)
+                end
+                iscale = (1.0f0 - hebbian_max_allocation) / inc
+                for i in 1:n
+                    i != j && (D[i, j] += Sd[i, j] * iscale)
+                end
+            else
+                # ...and with no Hebbian links the structural vector takes the whole budget.
+                iscale = 1.0f0 / inc
+                for i in 1:n
+                    i != j && (D[i, j] += Sd[i, j] * iscale)
+                end
+            end
         end
     end
 
@@ -275,16 +357,70 @@ Decay is deliberately NOT applied here. Core keeps forgetting as a separate poli
 which is how the previous implementation's `decay` parameter hid its non-conservation behind a
 plausible-looking shrink. Use [`ecan_apply_decay!`](@ref) explicitly.
 """
-function ecan_sti_spread!(state::ECANState; max_spread::Float32=0.3f0)::ECANState
+function ecan_sti_spread!(
+    state::ECANState;
+    max_spread::Float32=0.3f0,
+    hebbian_max_allocation::Float32=0.05f0,
+    sources::Union{Nothing,AbstractVector{Int}}=nothing,
+)::ECANState
     n = length(state.sti)
     n == 0 && return state
-    D = ecan_build_diffusion_matrix(state.C; max_spread=max_spread)
+    D = ecan_build_diffusion_matrix(
+        state.C, state.S; max_spread=max_spread,
+        hebbian_max_allocation=hebbian_max_allocation,
+    )
+
+    # SOURCE RESTRICTION — the two-tier WA/AF split, expressed matrix-natively. Upstream runs two
+    # agents differing in which atoms are picked as diffusion SOURCES: AFImportanceDiffusionAgent
+    # draws from the attentional focus, WAImportanceDiffusionAgent from `getRandomAtomNotInAF`.
+    # In the matrix form that is exactly a mask on COLUMNS: a non-source atom gets an identity
+    # column, so it keeps all its STI and pays nobody. Left-stochasticity — hence conservation —
+    # is preserved by construction, since an identity column also sums to 1.
+    if sources !== nothing
+        is_source = falses(n)
+        for j in sources
+            1 <= j <= n || throw(ArgumentError("source index $j out of range 1:$n"))
+            is_source[j] = true
+        end
+        for j in 1:n
+            is_source[j] && continue
+            for i in 1:n
+                D[i, j] = 0.0f0
+            end
+            D[j, j] = 1.0f0
+        end
+    end
     # Use the package's own semiring primitive rather than `*`, so the algebra is explicit and a
     # future GPU semiring kernel swaps in here. Previously MaxPlusSemiring was IMPORTED and then
     # never used — the (max,+) loop was hand-inlined. `semiring_matvec` also accumulates in
     # Float64 before narrowing, which keeps the conservation residual near eps(Float32).
     state.sti = semiring_matvec(SumProductSemiring(), D, state.sti)
     state
+end
+
+"""
+    ecan_attentional_focus(state; af_threshold=0.5f0) → Vector{Int}
+    ecan_below_focus(state; af_threshold=0.5f0) → Vector{Int}
+
+Indices of atoms in / below the Attentional Focus, by STI threshold.
+
+Feed either into [`ecan_sti_spread!`](@ref)'s `sources` to get upstream's two tiers:
+
+    ecan_sti_spread!(st; sources = ecan_attentional_focus(st))   # AFImportanceDiffusionAgent
+    ecan_sti_spread!(st; sources = ecan_below_focus(st))         # WAImportanceDiffusionAgent
+
+⚠️ Threshold-only. Upstream and Core also apply rank rules and caps to AF membership, and
+`WAImportanceDiffusionAgent` samples its sources RANDOMLY from the non-AF set
+(`getRandomAtomNotInAF`) rather than taking all of them — so `ecan_below_focus` is the full
+candidate set, not one stochastic draw from it. Sample it yourself if you want upstream's
+stochastic behaviour.
+"""
+function ecan_attentional_focus(state::ECANState; af_threshold::Float32=0.5f0)::Vector{Int}
+    findall(>=(af_threshold), state.sti)
+end
+
+function ecan_below_focus(state::ECANState; af_threshold::Float32=0.5f0)::Vector{Int}
+    findall(<(af_threshold), state.sti)
 end
 
 """
