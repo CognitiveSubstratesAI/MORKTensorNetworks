@@ -194,43 +194,123 @@ end
         @test err2 < 0.05
     end
 
-    @testset "ECAN tensor bridge — §7.3" begin
+    # ECAN tensor bridge — AGI-2009 §5.4 conservative spreading, v' = Dv.
+    #
+    # These assertions target the INVARIANT, not the shape. The previous version of this testset
+    # checked only `length`, `isfinite`, and `>= 0` — all of which the old non-conservative
+    # (max,+) implementation satisfied while creating STI out of nothing, spreading down
+    # transposed edges, and discarding each atom's own STI. A test that cannot fail for the
+    # defect it is meant to guard is the reason that survived from 2026-05-10 to 2026-08-05.
+    @testset "ECAN tensor bridge — AGI-2009 §5.4" begin
         n = 4
-        state = ECANState(n)
-        state.sti = Float32[0.8, 0.3, 0.1, 0.6]
-
-        # §7.3.2: Build Hebbian weight matrix
         links = [(1, 2, 0.5f0), (2, 3, 0.4f0), (3, 4, 0.3f0), (4, 1, 0.2f0)]
-        W = ecan_build_weight_matrix(links, n)
-        state.W = W
-        @test W[1, 2] == 0.5f0
-        @test W[2, 4] == -Inf32  # no link
 
-        # §7.3.1: STI spreading as (max,+) matmul
-        old_sti = copy(state.sti)
-        ecan_sti_spread!(state; decay=0.9f0)
-        @test length(state.sti) == n
-        @test all(isfinite, state.sti)
-        @test all(state.sti .>= 0.0f0)
+        @testset "connection matrix C[src,dst]" begin
+            C = ecan_build_weight_matrix(links, n)
+            @test C[1, 2] == 0.5f0
+            @test C[2, 4] == 0.0f0          # no link — 0 is the (+,×) annihilator, not -Inf
+            @test size(C) == (n, n)
+        end
 
-        # §7.3.2: Hebbian update — save original before update
-        state.sti = Float32[0.8, 0.3, 0.1, 0.6]
-        state.W = copy(W)
-        w12_before = state.W[1, 2]
-        ecan_hebbian_update!(state; η=0.1f0, decay=1.0f0)  # no decay → pure Hebbian
-        @test state.W[1, 2] > w12_before  # co-active pair strengthened
+        @testset "D is LEFT-STOCHASTIC — every column sums to 1" begin
+            # This is the property that makes conservation hold; assert it directly rather than
+            # inferring it from a conserved sum on one lucky input.
+            D = ecan_build_diffusion_matrix(ecan_build_weight_matrix(links, n))
+            for j in 1:n
+                @test sum(D[:, j]) ≈ 1.0f0 atol = 1e-5
+            end
+            @test all(D .>= 0.0f0)
 
-        # §7.3.3: Rent collection
-        state.sti = Float32[0.8, 0.3, 0.1, 0.6]
-        total_rent = ecan_collect_rent!(state; af_threshold=0.5f0, rent_rate=0.1f0)
-        @test total_rent > 0.0f0
-        @test state.sti[1] < 0.8f0   # high STI atom paid rent
-        @test state.sti[2] == 0.3f0  # below threshold — no rent
+            # ORIENTATION: D[dst,src] — the TRANSPOSE of C[src,dst]. Link 1→2 must put mass in
+            # column 1 (source), row 2 (destination). The previous implementation read the
+            # matrix the other way round, which is invisible on symmetric link sets.
+            @test D[2, 1] > 0.0f0
+            @test D[1, 2] == 0.0f0
 
-        # §7.3.3: Wage distribution
-        state.sti = Float32[0.5, 0.2, 0.1, 0.4]
-        ecan_distribute_wages!(state, 0.1f0)
-        @test sum(state.sti) > 0.5f0 + 0.2f0 + 0.1f0 + 0.4f0 - 1e-5  # budget added
+            # self-retention diagonal = 1 - max_spread when the atom has any outgoing link
+            @test D[1, 1] ≈ 1.0f0 - 0.3f0 atol = 1e-5
+        end
+
+        @testset "an atom with NO outgoing links keeps all its STI" begin
+            # Regression: the old code discarded an atom's own STI the moment it had any
+            # incoming link, because there was no diagonal at all.
+            state = ECANState(3)
+            state.sti = Float32[5.0, 0.0, 0.0]
+            state.C = ecan_build_weight_matrix([(2, 3, 1.0f0)], 3)   # atom 1 is isolated
+            ecan_sti_spread!(state)
+            @test state.sti[1] ≈ 5.0f0 atol = 1e-5
+        end
+
+        @testset "spreading CONSERVES total STI" begin
+            # The defining ECAN invariant (AGI-2009 §3.2). The old (max,+) form COPIED a
+            # neighbour's STI without debiting it, so the total grew every step.
+            state = ECANState(n)
+            state.sti = Float32[0.8, 0.3, 0.1, 0.6]
+            state.C = ecan_build_weight_matrix(links, n)
+            before = sum(state.sti)
+            for _ in 1:20                       # compounding would expose any per-step leak
+                ecan_sti_spread!(state)
+                @test sum(state.sti) ≈ before atol = 1e-4
+            end
+
+            # ...and it actually MOVED importance rather than sitting still
+            @test state.sti != Float32[0.8, 0.3, 0.1, 0.6]
+        end
+
+        @testset "conservation holds at economic scale and with negative STI" begin
+            # Raw STI is unbounded and signed (Core, core_logic.metta:120-126). A fixed [0,1]
+            # clamp — the 2026-06-30 scale bug the old `max_spread=1.0` reintroduced — would
+            # destroy both of these.
+            state = ECANState(n)
+            state.sti = Float32[100000.0, 10000.0, 10.0, -50.0]
+            state.C = ecan_build_weight_matrix(links, n)
+            before = sum(state.sti)
+            ecan_sti_spread!(state)
+            @test sum(state.sti) ≈ before rtol = 1e-5
+            @test maximum(state.sti) > 1.0f0        # not clamped to a unit interval
+            @test any(state.sti .< 0.0f0)           # debt survives a spread step
+        end
+
+        @testset "inverse-Hebbian links spread in REVERSE (§5.4)" begin
+            state = ECANState(2)
+            state.sti = Float32[1.0, 0.0]
+            state.C = ecan_build_weight_matrix([(2, 1, -1.0f0)], 2)  # negative 2→1 ⇒ flows 1→2
+            ecan_sti_spread!(state)
+            @test state.sti[2] > 0.0f0
+            @test sum(state.sti) ≈ 1.0f0 atol = 1e-5
+        end
+
+        @testset "decay is SEPARATE and is the only lossy step" begin
+            state = ECANState(2)
+            state.sti = Float32[1.0, 1.0]
+            ecan_apply_decay!(state, 0.5f0)
+            @test sum(state.sti) ≈ 1.0f0 atol = 1e-5   # deliberately NOT conserved
+        end
+
+        @testset "Hebbian update strengthens co-active pairs, topology frozen" begin
+            state = ECANState(n)
+            state.sti = Float32[0.8, 0.3, 0.1, 0.6]
+            state.C = ecan_build_weight_matrix(links, n)
+            c12_before = state.C[1, 2]
+            ecan_hebbian_update!(state; η=0.1f0, decay=1.0f0)
+            @test state.C[1, 2] > c12_before
+            @test state.C[2, 4] == 0.0f0        # absent link stays absent — no link creation
+        end
+
+        @testset "rent and wages" begin
+            state = ECANState(n)
+            state.sti = Float32[0.8, 0.3, 0.1, 0.6]
+            total_rent = ecan_collect_rent!(state; af_threshold=0.5f0, rent_rate=0.1f0)
+            @test total_rent > 0.0f0
+            @test state.sti[1] < 0.8f0          # above threshold — paid
+            @test state.sti[2] == 0.3f0         # below threshold — untouched
+
+            # Feeding rent back as the wage budget is what makes the cycle conserve; without
+            # that the collected STI is simply destroyed (there is no fund — see the header).
+            before = sum(state.sti)
+            ecan_distribute_wages!(state, total_rent)
+            @test sum(state.sti) ≈ before + total_rent atol = 1e-5
+        end
     end
 
     # ── Regression tests for 2026-05-30 audit fixes ────────────────────────────

@@ -96,23 +96,35 @@ gpu_threshold(output, input, 0.0f0; backend=CUDABackend())
 | `BatchedBoundaryStrategy()` | Medium overlap (5–20%) | Pass 1: within-shard; Pass 2: cross-shard boundary |
 | `ReshardStrategy()` | Wide overlap (>20%) | Merge adjacent shards with >20% cross-column references |
 
-### ECAN tensor bridge (§7.3)
+### ECAN tensor bridge (AGI-2009 §5.4)
+
+Conservative importance spreading, `v' = Dv`, over the (+,×) semiring. **D** is the Hebbian
+connection matrix column-normalised to be **left-stochastic**, so `Σ STI` is conserved exactly —
+the invariant AGI-2009 §3.2 calls *"the key dynamical difference from an ordinary attractor
+neural network."* Matches upstream `metta-attention` (`tradeSti` is zero-sum) and Core's
+`Core/lib/ecan/`.
 
 ```julia
 state = ECANState(n)
-state.W = ecan_build_weight_matrix(links, n)
+state.C = ecan_build_weight_matrix(links, n)   # C[src,dst]; negative ⇒ inverse-Hebbian
 
-# §7.3.1: STI spreading as (max,+) matmul
-# STI_new[x] = max_y(W[x,y] + STI[y])
-ecan_sti_spread!(state; decay=0.9f0)
+# Spreading: v' = Dv, left-stochastic ⇒ Σ STI conserved. max_spread = Core's 0.3.
+ecan_sti_spread!(state; max_spread=0.3f0)
 
-# §7.3.2: Hebbian weight update  ΔW[x,y] = η × STI[x] × STI[y]
+# Forgetting is a SEPARATE, deliberately non-conservative step.
+ecan_apply_decay!(state, 0.99f0)
+
+# Hebbian weight update  ΔC[x,y] = η × STI[x] × STI[y]  (existing links only)
 ecan_hebbian_update!(state; η=0.01f0)
 
-# §7.3.3: Attention fund (rent/wage)
+# Rent/wage. Piping rent into wages is what makes the cycle conserve — there is no fund.
 rent = ecan_collect_rent!(state; af_threshold=0.5f0, rent_rate=0.1f0)
 ecan_distribute_wages!(state, rent)
 ```
+
+⚠️ Raw STI is **unbounded and signed** (economic scale — Core runs funds/target/wage at
+100000/10000/10). Never clamp it to a unit interval; the `[0,1]` concentration is a normalised
+*view*, not a bound. See the file header for the full parity gap against Core.
 
 ## Quick start
 
@@ -146,7 +158,7 @@ hrt_forward!(state, params, cfg)
 
 # ECAN
 ecan = ECANState(100)
-ecan.W = ecan_build_weight_matrix(links, 100)
+ecan.C = ecan_build_weight_matrix(links, 100)
 ecan_sti_spread!(ecan)
 ecan_hebbian_update!(ecan)
 ```

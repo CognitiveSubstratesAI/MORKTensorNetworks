@@ -48,8 +48,15 @@ listed here. This file tracks what remains.
       workload routes connectome-scale `Aᵏ` reachability through MORKTN). ✅ **Done now (the warranted part):**
       `gpu_semiring_spmm` has a `max_dense_bytes` fail-loud guard (default 4 GiB) so it errors actionably
       instead of OOMing silently at scale — see `SemiringKernels.jl`; tested in `runtests.jl`.
-- [ ] **H5** — represent `ECANState.W` as CSR; route spreading through
-      `gpu_semiring_spmv(MaxPlusSemiring(), …)`; Hebbian update over existing links only.
+- [ ] **H5** — represent `ECANState.C` as CSR; route spreading through
+      `gpu_semiring_spmv(SumProductSemiring(), …)`; Hebbian update over existing links only.
+      ⚠️ **NOT MaxPlusSemiring** (corrected 2026-08-05): ECAN spreading is `v' = Dv` with **D
+      left-stochastic**, which conserves Σ STI — AGI-2009 §5.4, upstream `metta-attention`'s
+      zero-sum `tradeSti`, "Going With the Flow" Lemma 4.1, TECAN §2.1. (max,+) is Viterbi
+      best-path and copies a neighbour's STI without debiting it. The CPU path is fixed and
+      tested; this row is now only about the sparse/GPU representation, and `D` must be built by
+      `ecan_build_diffusion_matrix` (or an equivalent column-normalisation) before any spmv —
+      the sparsity pattern is `C`'s, but the VALUES must be the normalised ones.
 - [ ] **H3 (perf tail)** — the rebuilt `materialize!` is correct but still builds dense-ish
       Julia containers; SoA + Bumper arena + reusable key buffer per the audit's H3 note.
 - [ ] **H1 (gate)** — add an AllocCheck/JET CI gate on `semiring_matmul` once identity is set.

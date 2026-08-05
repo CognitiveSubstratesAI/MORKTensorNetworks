@@ -38,7 +38,7 @@ include("shard/CrossShardJoin.jl")     # §5.6: join strategies (needs Semirings
 include("shard/ShardZipper.jl")        # §2: 6-step workflow (needs MORK + PathMap)
 include("hrt/HRT.jl")                  # §6: HRT pyramid (standalone)
 include("hrt/PredictiveCodingTrainer.jl") # §6.4: PC training (needs HRT)
-include("ecan/ECANTensorBridge.jl")    # §7.3: ECAN STI spreading + Hebbian + attention fund
+include("ecan/ECANTensorBridge.jl")    # AGI-2009 §5.4: conservative STI spreading (v' = Dv)
 
 # Re-export public API from submodules
 using .Semirings
@@ -64,9 +64,9 @@ export tucker_decompose_2d, tucker_reconstruct_2d, should_densify
 export tucker_decompose_3d, tucker_reconstruct_3d
 export tucker_decompose_nd, tucker_reconstruct_nd
 export BCSRMatrix, dense_to_bcsr, bcsr_to_dense
-export ECANState, ecan_sti_spread!, ecan_hebbian_update!
+export ECANState, ecan_sti_spread!, ecan_hebbian_update!, ecan_apply_decay!
 export ecan_collect_rent!, ecan_distribute_wages!
-export ecan_build_weight_matrix, ecan_sti_vector
+export ecan_build_weight_matrix, ecan_build_diffusion_matrix, ecan_sti_vector
 export should_densify
 # CrossShardJoin
 export HaloStrategy,
