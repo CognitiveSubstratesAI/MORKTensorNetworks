@@ -23,7 +23,15 @@ using PathMap:
     zipper_to_next_val!,
     zipper_path,
     zipper_child_mask,
-    test_bit
+    test_bit,
+    # M2 — the O(1) Λ_s graft reattach (spec §2.5). All three are 1:1 ports:
+    #   trie_ref_at_path / tr_make_map  <- ZipperInfallibleSubtries::make_map (trie_ref.rs:290)
+    #   write_zipper_at_path            <- zipper_head / write zipper factory
+    #   wz_graft_map!                   <- ZipperWriting::graft_map (write_zipper.rs:1464)
+    trie_ref_at_path,
+    tr_make_map,
+    write_zipper_at_path,
+    wz_graft_map!
 
 # ── §2.1: Shard + PatchRecord ──────────────────────────────────────────────────
 
@@ -282,12 +290,11 @@ end
 §2 Step 5: Apply the patch log to the trie and clear it.
 Returns number of patches applied.
 
-M2 note (audit 2026-06-04): the spec §2.5 promises O(1) Λ_s graft reattach via
-structural sharing. This implementation does O(patches × path-length) per-path
-global writes instead. The wz_graft! import is present but unused — a real O(1)
-graft reattach is the correct target but requires the `capture_shard` to record
-a proper write-zipper continuation at the shard root, which is not yet wired.
-Owner decision: implement the graft reattach or update §2 to not claim O(1).
+M2 RESOLVED 2026-08-05. The spec §2.5 O(1) Λ_s graft reattach is now implemented:
+`tr_make_map` the region out (structural sharing), patch the isolated copy, `wz_graft_map!` it back
+in one operation. `wz_graft!`'s import is no longer the unused tell — `wz_graft_map!` is live. The
+owner decision this note asked for ("implement the graft reattach or update §2 to not claim O(1)")
+is answered by implementing it.
 
 M1 note (audit 2026-06-04): `empty!(shard.patch_log)` clears the log BEFORE any
 caller can check `length(patch_log)` in `should_adapt`. The patch count is returned
@@ -298,16 +305,44 @@ calling `patch_and_reattach!`.
 function patch_and_reattach!(shard::Shard, space)::Int
     prefix = shard.prefix
     applied = 0
+
+    # ── M2 RESOLVED 2026-08-05: the O(1) Λ_s graft the spec promised ─────────────────────────────
+    #
+    # WAS: one global `set_val_at!`/`remove_val_at!` per patch, at `vcat(prefix, rec.path)` —
+    # O(patches × full-path-length) descents into the LIVE trie. The audit note called that a
+    # complexity miss; it is also a CORRECTNESS-adjacent one, because
+    # `pathmap_rs_reference.md` §12.1 records that a WriteZipper calls `make_mut` on EVERY node it
+    # descends past, "even if no write operation is ever performed". So N descents uniquified nodes
+    # along N paths and broke structural sharing for paths the patch never changed — violating
+    # §1.2 invariant 3 ("operations that do not modify a subtrie must not break its sharing").
+    # There is still no Scouting Write Zipper to avoid that (§12.1 "proposed, not yet implemented" —
+    # re-verified against upstream 2026-08-05), so FEWER DESCENTS is the only lever available.
+    #
+    # NOW: extract the shard region as an isolated map (O(1), structural sharing), patch THAT, and
+    # put it back with a single graft. One descent to the prefix instead of N to leaf paths.
+    #
+    # ⚠️ THE ISOLATION IS LOAD-BEARING AND WAS NOT FREE. `tr_make_map` aliased the shared node
+    # WITHOUT bumping its refcount until 2026-08-05, so `_cow_in_place!` (which forks only above 1)
+    # mutated in place and every "local" write here would have landed in the LIVE trie — corrupting
+    # regions the kernel never touched, with a symptom arbitrarily far from this call site. Fixed in
+    # PathMap (`m.root = copy(focus_rc)`) with a refcount-asserting regression test; this is that
+    # fix's first consumer. Do not replace `tr_make_map` with a raw root assignment.
+    region = tr_make_map(trie_ref_at_path(space.btm, prefix))
+
     for rec in shard.patch_log
-        full_path = vcat(prefix, rec.path)
+        # RELATIVE paths now — the region map is rooted AT the prefix
         if rec.kind == :insert || rec.kind == :update
-            set_val_at!(space.btm, full_path, MORK.UNIT_VAL)
+            set_val_at!(region, rec.path, MORK.UNIT_VAL)
             applied += 1
         elseif rec.kind == :delete
-            remove_val_at!(space.btm, full_path)
+            remove_val_at!(region, rec.path)
             applied += 1
         end
     end
+
+    # Λ_s: replace the whole subtrie in one operation.
+    wz_graft_map!(write_zipper_at_path(space.btm, prefix), region)
+
     empty!(shard.patch_log)   # clears log — call should_adapt BEFORE this
     return applied
 end
