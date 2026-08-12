@@ -115,6 +115,32 @@ struct MinPlusSemiring <: AbstractSemiring end
 # kept as a named alias for caller intent (Occam complexity Q_cost) but adds no new
 # algebra; consider consolidating onto MinPlus if the Q_cost naming isn't load-bearing.
 
+# ⚠️ PATH-INDEPENDENCE, CHECKED 2026-08-12 after Zarathustra Goertzel relayed a claim that this
+# semiring double-counts shared evidence and so returns confidences that are TOO HIGH. Checked against
+# the code: the claim is directionally INVERTED for this implementation, and a different gap is real.
+#
+#   ⊕ = max  is the ACROSS-PATHS merge. It cannot double-count: two derivation paths sharing a premise
+#            yield the STRONGER, never the sum. Inflation needs ⊕ = `+` or probabilistic-OR (a+b-ab),
+#            neither of which is here. The OPPOSITE defect is present — max DISCARDS corroboration,
+#            where PLN's revision rule combines independent support into something stronger than
+#            either input. This under-counts; it does not over-count.
+#   ⊗ = *    is the ALONG-A-PATH chain, and multiplying link strengths DOES assume conditional
+#            independence of successive links. A genuine assumption, and the standard PLN deduction
+#            issue — PLN's own deduction formula needs more than the product.
+#
+# THIS IS WORK OWED. `(max, *)` is the wrong algebra for PLN truth values in BOTH directions above, so
+# whatever reasons with it will be wrong when it is reasoned with; the defect is in the algebra, not in
+# who calls it today. And it is an ADDITION ABOVE UPSTREAM WITH NO ORACLE — see N1 above: the source
+# paper's §3.5 defines exactly four semirings and PLN is ours, which by
+# `[[feedback_additions_above_upstream_need_own_oracle]]` is exactly the kind of addition that needs
+# its own ground truth and has never had one.
+#
+# ⇒ THE MISSING STRUCTURE HAS A WORKED FORMALISATION TO BORROW (all three checked present):
+#     MeTTapedia `lean/mettapedia/Mettapedia/PLN/WorldModel/PLNWorldModelOverlap.lean`
+#                `PLN/RuleFamilies/FirstOrder/PLNMultiPathDependency.lean`
+#                `PLN/Bridges/HOL/LedgerMultiPathAdapter.lean`  — union measure = sum − dependency
+# A scalar semiring genuinely has nowhere to PUT an overlap term; that part of the relayed claim is
+# right, and it is why the fix is a different algebra rather than a different constant.
 struct PLNSemiring <: AbstractSemiring end
 
 @inline szero(::PLNSemiring) = 0.0
