@@ -142,8 +142,38 @@ struct MinPlusSemiring <: AbstractSemiring end
 # as a way to reason — see `[[feedback_never_deprioritize_by_consumer_count]]`. The defect is in the
 # algebra; who calls it today is not what makes it a defect.
 #
+# 🔴 AND WE ALREADY HAVE THE CORRECT IMPLEMENTATION — IN MeTTa. `Core/lib/pln/pln_core_logic.metta`
+# carries the PLN book's deduction formula (5.2.2.2, p.74; cross-referenced to trueagi-io/hyperon-pln
+# and PeTTa's lib_pln.metta), which is NOT a product:
+#
+#     sAC = sAB*sBC + (1 - sAB) * (sC - sB*sBC) / (1 - sB)
+#
+# guarded by `conditional-probability-consistency` — the Fréchet bounds
+# max(0,(A+B-1)/A) <= P(B|A) <= min(1,B/A) — which REJECTS a probabilistically impossible triple
+# instead of computing with it. That guard is exactly the dependency structure a scalar semiring has
+# nowhere to put, and it has been in the tree all along.
+#
+# MEASURED 2026-08-12, `simpleDeductionStrength` vs `otimes(PLNSemiring, sAB, sBC)`:
+#
+#     sA   sB   sC   sAB  sBC  |  PLN lib   a*b     diff
+#     0.5  0.5  0.5  0.8  0.7  |  0.62      0.56    0.06
+#     0.3  0.6  0.4  0.7  0.9  |  (empty)   0.63    — preconditions FAILED, semiring answered anyway
+#     0.9  0.8  0.7  0.85 0.75 |  0.7125    0.6375  0.075
+#     0.2  0.5  0.9  0.6  0.8  |  0.88      0.48    0.40
+#     0.5  0.2  0.5  0.3  0.9  |  0.55      0.27    0.28
+#
+# The product UNDER-STATES in every case (confirming the ⊕/⊗ analysis above and contradicting the
+# relayed "confidences too high"), by up to 0.40 absolute — a different answer, not a rounding gap. The
+# second row is the worse failure: the MeTTa lib refuses an inconsistent premise set, the semiring
+# launders it into a confident number.
+#
+# ⚠️ SO "NO ORACLE" WAS WRONG (an earlier version of this note said so). The oracle is in-tree, in
+# another package, and the two PLN implementations were simply never differentially tested against each
+# other. That cross-package differential is the work: `Core/lib/pln` is the reference, this is the
+# approximation, and nothing currently asserts they agree.
+#
 # THIS IS WORK OWED. `(max, *)` is the wrong algebra for PLN truth values in BOTH directions above, and
-# it is an ADDITION ABOVE UPSTREAM WITH NO ORACLE — see N1 above: the source
+# it is an ADDITION ABOVE THE PAPER'S FOUR SEMIRINGS — see N1 above: the source
 # paper's §3.5 defines exactly four semirings and PLN is ours, which by
 # `[[feedback_additions_above_upstream_need_own_oracle]]` is exactly the kind of addition that needs
 # its own ground truth and has never had one.
