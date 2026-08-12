@@ -693,4 +693,44 @@ end
         @test u_mix[1] == 1.0     # row 1: all ones
         @test u_mix[2] == 0.0     # row 2 has a zero
     end
+
+@testset "PLN composition keeps truth STRENGTHS; the paper's semirings keep spec behaviour" begin
+    # Spec §3 defines composition as T = H(⊕ R ⊗ S), and for the four semirings the paper defines that
+    # is the behaviour — pinned below so this change cannot drift into a deviation from the paper.
+    # PLNSemiring is OURS (see the N1 note in Semirings.jl), and H is wrong for it: it maps every
+    # non-zero composed truth value to sone = 1.0, returning REACHABILITY with the strength destroyed.
+    #
+    # Found 2026-08-12 while checking an outside claim about path independence. Nothing caught it
+    # because PLN is an addition above the paper's four semirings and had no oracle of its own — the
+    # generic semiring tests exercise it as an algebra (oplus/otimes/identities) and never ask what a
+    # COMPOSITION under it should mean.
+    R = [0.0 0.8 0.0;
+         0.0 0.0 0.5;
+         0.0 0.0 0.0]
+    S = [0.0 0.0 0.0;
+         0.0 0.0 0.6;
+         0.0 0.0 0.0]
+
+    # T[x,z] = max_y R[x,y] * S[y,z]. Only 1→2→3 contributes: 0.8 * 0.6 = 0.48.
+    T = path_compose(PLNSemiring(), R, S)
+    @test T[1, 3] ≈ 0.48
+    @test T[2, 3] == 0.0
+    @test !any(x -> x == 1.0, T)          # the defect's signature: every non-zero flattened to 1.0
+
+    # The Heaviside is still REACHABLE, just no longer the default for PLN.
+    Tth = path_compose(PLNSemiring(), R, S; apply_threshold = true)
+    @test Tth[1, 3] == 1.0
+
+    # …and remains the DEFAULT for every semiring the paper defines.
+    for sr in (BooleanSemiring(), SumProductSemiring(), MaxPlusSemiring(), MinPlusSemiring())
+        @test MORKTensorNetworks.heaviside_default(sr)
+    end
+    @test !MORKTensorNetworks.heaviside_default(PLNSemiring())
+
+    # Spec behaviour for SumProduct is unchanged by this edit: H projects the path count to 1.
+    B = [0.0 1.0 0.0; 0.0 0.0 1.0; 0.0 0.0 0.0]
+    @test path_compose(SumProductSemiring(), B, B)[1, 3] == 1.0
+    @test path_compose(SumProductSemiring(), B, B; apply_threshold = false)[1, 3] == 1.0
+end
+
 end  # MORKTensorNetworks

@@ -77,7 +77,7 @@ end
 # This is semiring matrix multiply.
 
 """
-    path_compose(sr, R, S; apply_threshold::Bool=true, backend=nothing) → C
+    path_compose(sr, R, S; apply_threshold::Bool=heaviside_default(sr), backend=nothing) → C
 
 Compose relations R and S per spec §3 table:
 T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])
@@ -105,7 +105,8 @@ SumProduct returned a path-count matrix instead of a {0,1} reachability matrix.
 And the GPU path was unreachable because `gpu_semiring_spmm` did not exist.
 """
 function path_compose(
-    sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix; apply_threshold::Bool=true,
+    sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
+    apply_threshold::Bool = heaviside_default(sr),
     backend=nothing
 )
     raw = if backend === nothing
@@ -115,11 +116,15 @@ function path_compose(
         # the GPU branch did not, so cols(R) > rows(S) caused an OOB read of rowptr_S in
         # the SpGEMM kernel. Assert here to match the dense path.
         @assert size(R, 2) == size(S, 1) "path_compose: inner dims must match — R is $(size(R)), S is $(size(S))"
-        # NOTE (F1/G1): dense_to_csr drops entries via `!iszero && isfinite`, i.e. it
-        # treats numeric 0.0 as structural absence. That is correct for SumProduct/Boolean
-        # (szero=0) but WRONG for MaxPlus/PLN where 0.0 is a valid present edge (sone) and
-        # szero is ±Inf. The GPU compose path is therefore sound for SumProduct/Boolean
-        # only; MaxPlus/PLN GPU compose is not yet faithful (use the dense path). See TODO.
+        # NOTE (F1/G1, PLN half CORRECTED 2026-08-12): dense_to_csr drops entries via
+        # `!iszero && isfinite`, treating numeric 0.0 as structural absence. Correct for
+        # SumProduct/Boolean (szero=0) and WRONG for MaxPlus/MinPlus/Cost, where 0.0 is a
+        # valid present edge (MaxPlus sone=0) and szero is ±Inf.
+        # ⚠️ THIS NOTE PREVIOUSLY NAMED PLN AND WAS BACKWARDS: PLNSemiring has szero = 0.0
+        # and sone = 1.0, so 0.0 IS its structural absence and the CSR drop is consistent.
+        # PLN's compose defect is the HEAVISIDE (see `heaviside_default`), not sparsity.
+        # `docs/specs/ARCHITECTURE_VERIFIED.md` inherited the same error.
+        # GPU compose remains unfaithful for MaxPlus/MinPlus/Cost — use the dense path.
         # Convert dense → CSR, run SpGEMM, return dense output matrix.
         rowptr_R, colval_R, nzval_R, _, _ = dense_to_csr(R)
         rowptr_S, colval_S, nzval_S, _, n = dense_to_csr(S)

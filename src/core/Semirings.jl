@@ -39,7 +39,8 @@ export AbstractSemiring,
     sone,
     semiring_matmul,
     semiring_matvec,
-    semiring_reduce
+    semiring_reduce,
+    heaviside_default
 
 # ─── Abstract Type ───────────────────────────────────────────────────────────
 
@@ -159,6 +160,30 @@ struct PLNSemiring <: AbstractSemiring end
 @inline sone(::PLNSemiring) = 1.0
 @inline oplus(::PLNSemiring, a, b) = max(a, b)
 @inline otimes(::PLNSemiring, a, b) = a * b
+
+"""
+    heaviside_default(sr) -> Bool
+
+Should `path_compose` apply the spec's Heaviside step H by DEFAULT under this semiring?
+
+Spec §3 defines composition as `T[x,z] = H(⊕_y R[x,y] ⊗ S[y,z])`, and for the FOUR semirings the paper
+defines, that stays the default — the spec's reading is reachability, and deviating from the paper is
+how we get things wrong.
+
+`PLNSemiring` is OURS, not the paper's (see N1 above), and H is wrong for it: `H(x) = sone if x != szero`
+maps every non-zero composed truth value to `1.0`, so a composition of PLN relations returns
+REACHABILITY with the strength destroyed. A truth value is the same kind of quantity as a SumProduct
+count or a MaxPlus score — both of which the docstring already tells callers to obtain with
+`apply_threshold=false`. PLN was simply missing from that list, and defaulting it correctly is better
+than expecting every caller to remember.
+
+⚠️ `CostSemiring` HAS THE SAME PROBLEM AND IS DELIBERATELY LEFT ALONE: H maps any finite cost to
+`sone = 0.0`, destroying it. Not changed here because Cost is behaviourally identical to MinPlus (N1),
+so giving it a different default would make the alias load-bearing in a new way — a decision about
+whether `Q_cost` is a real semiring or a naming convenience, which is not this change.
+"""
+@inline heaviside_default(::AbstractSemiring) = true
+@inline heaviside_default(::PLNSemiring) = false
 
 # ─── Cost Semiring (min, +, +∞, 0) — Q_cost / Occam ─────────────────────────
 
