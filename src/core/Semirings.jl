@@ -128,9 +128,21 @@ struct MinPlusSemiring <: AbstractSemiring end
 #            independence of successive links. A genuine assumption, and the standard PLN deduction
 #            issue — PLN's own deduction formula needs more than the product.
 #
-# THIS IS WORK OWED. `(max, *)` is the wrong algebra for PLN truth values in BOTH directions above, so
-# whatever reasons with it will be wrong when it is reasoned with; the defect is in the algebra, not in
-# who calls it today. And it is an ADDITION ABOVE UPSTREAM WITH NO ORACLE — see N1 above: the source
+# 🔴 A THIRD DEFECT, AND IT IS IN A PATH THAT DOES DISPATCH PLN. `path_compose` (PathAlgebra.jl)
+# APPLIES THE HEAVISIDE STEP BY DEFAULT — `H(x) = sone if x != szero` — so composing two PLN relations
+# returns 1.0 for every non-zero entry and the truth STRENGTH is destroyed. Its docstring lists only
+# SumProduct (path counting) and MaxPlus (Viterbi) as the cases wanting `apply_threshold=false`; PLN is
+# omitted, though a truth value is exactly the kind of weight that must not be projected to {0,1}.
+# `semiring_tag(::PLNSemiring) = 5` and the GPU `oplus` dispatch (SemiringKernels.jl:77) mean PLN is
+# genuinely routed through these kernels, so this is not hypothetical.
+#
+# ⚠️ AN EARLIER VERSION OF THIS NOTE SAID "no consumer, so neither bites today". That was WRONG on the
+# facts (the GPU kernels dispatch tag 5; `path_universal` and `path_compose` both accept PLN) and wrong
+# as a way to reason — see `[[feedback_never_deprioritize_by_consumer_count]]`. The defect is in the
+# algebra; who calls it today is not what makes it a defect.
+#
+# THIS IS WORK OWED. `(max, *)` is the wrong algebra for PLN truth values in BOTH directions above, and
+# it is an ADDITION ABOVE UPSTREAM WITH NO ORACLE — see N1 above: the source
 # paper's §3.5 defines exactly four semirings and PLN is ours, which by
 # `[[feedback_additions_above_upstream_need_own_oracle]]` is exactly the kind of addition that needs
 # its own ground truth and has never had one.

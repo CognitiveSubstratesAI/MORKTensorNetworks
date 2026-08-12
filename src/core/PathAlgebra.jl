@@ -93,6 +93,13 @@ Pass `backend=CPU()` for the GPU-shaped path on host, or e.g.
 `backend=CUDABackend()` for real GPU dispatch. When `backend===nothing` (default),
 uses the dense CPU `semiring_matmul` reference.
 
+⚠️ PLN IS MISSING FROM THE `apply_threshold=false` LIST ABOVE, and should not be. Under
+`PLNSemiring` the Heaviside projects every non-zero composed truth value to `sone = 1.0`, so a
+composition of PLN relations returns REACHABILITY and the strength is destroyed. A PLN truth value is
+exactly the kind of weight the raw path exists for, like a SumProduct count or a MaxPlus score. Found
+2026-08-12 while checking a path-independence claim from outside; see the block above `struct
+PLNSemiring` in Semirings.jl for the two algebraic defects that accompany it.
+
 Previously the H wrapper was silently dropped, so `path_compose` under
 SumProduct returned a path-count matrix instead of a {0,1} reachability matrix.
 And the GPU path was unreachable because `gpu_semiring_spmm` did not exist.
