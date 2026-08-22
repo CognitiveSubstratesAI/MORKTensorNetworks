@@ -15,7 +15,7 @@ Depends on: PathMap (trie + zipper), MORK (Space, PathMap{UnitVal})
 # zipper_ascend_byte!, wz_graft!, SparseArrays, LinearAlgebra — none referenced in the
 # body. (wz_graft! was the tell for the unimplemented O(1) graft reattach — see M2 note
 # on patch_and_reattach!.) Added zipper_child_mask + test_bit for the H4 child-iteration.
-using PathMap:
+using PathMaps:
     read_zipper_at_path,
     zipper_val_count,
     set_val_at!,

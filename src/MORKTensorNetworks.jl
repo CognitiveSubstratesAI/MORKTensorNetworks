@@ -2,7 +2,7 @@
 MORKTensorNetworks — Standalone Julia package
 
 Ports "From Path Algebra in MORK to Tensor Logic on GPUs"
-(Goertzel, October 2025) as a standalone package on top of MORK + PathMap.
+(Goertzel, October 2025) as a standalone package on top of MORK + PathMaps.
 
 Spec: docs/specs/mork_tensor_networks_spec.md
 
@@ -19,7 +19,7 @@ Depends on: MORK, PathMap, KernelAbstractions (GPU vendor-neutral)
 module MORKTensorNetworks
 
 using MORK
-using PathMap
+using PathMaps
 using LinearAlgebra
 using SparseArrays
 
