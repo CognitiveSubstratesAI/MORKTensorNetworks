@@ -223,7 +223,7 @@ end
             # This is the property that makes conservation hold; assert it directly rather than
             # inferring it from a conserved sum on one lucky input.
             D = ecan_build_diffusion_matrix(ecan_build_weight_matrix(links, n);
-                                            max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
+                max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
             for j in 1:n
                 @test sum(D[:, j]) ≈ 1.0f0 atol = 1e-5
             end
@@ -257,7 +257,9 @@ end
             state.C = ecan_build_weight_matrix(links, n)
             before = sum(state.sti)
             for _ in 1:20                       # compounding would expose any per-step leak
-                ecan_sti_spread!(state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC)
+                ecan_sti_spread!(
+                    state; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC
+                )
                 @test sum(state.sti) ≈ before atol = 1e-4
             end
 
@@ -294,7 +296,9 @@ end
             # the rest. The column must still sum to 1 — the combination cannot break conservation.
             C = ecan_build_weight_matrix([(1, 2, 1.0f0)], 3)          # Hebbian 1→2
             S = ecan_build_weight_matrix([(1, 3, 1.0f0)], 3)          # structural 1→3
-            D = ecan_build_diffusion_matrix(C, S; max_spread=0.4f0, hebbian_max_allocation=0.05f0)
+            D = ecan_build_diffusion_matrix(
+                C, S; max_spread=0.4f0, hebbian_max_allocation=0.05f0
+            )
             for j in 1:3
                 @test sum(D[:, j]) ≈ 1.0f0 atol = 1e-5
             end
@@ -307,7 +311,9 @@ end
             # decay as 1/nH², so pin the invariant that distinguishes the two readings
             C4 = ecan_build_weight_matrix([(1, 2, 1.0f0), (1, 3, 1.0f0), (1, 4, 1.0f0)], 5)
             S4 = ecan_build_weight_matrix([(1, 5, 1.0f0)], 5)
-            D4 = ecan_build_diffusion_matrix(C4, S4; max_spread=0.4f0, hebbian_max_allocation=0.05f0)
+            D4 = ecan_build_diffusion_matrix(
+                C4, S4; max_spread=0.4f0, hebbian_max_allocation=0.05f0
+            )
             @test (D4[2, 1] + D4[3, 1] + D4[4, 1]) ≈ 0.4f0 * 0.05f0 atol = 1e-5
             @test sum(D4[:, 1]) ≈ 1.0f0 atol = 1e-5
 
@@ -330,9 +336,9 @@ end
             # AFImportanceDiffusionAgent draws from the focus, WAImportanceDiffusionAgent from
             # getRandomAtomNotInAF. As a matrix that is a column mask, and a non-source column
             # must be the identity — which keeps the operator left-stochastic.
-            mk() = (s = ECANState(3);
-                    s.sti = Float32[0.9, 0.1, 0.2];
-                    s.C = ecan_build_weight_matrix([(1, 2, 1.0f0), (3, 2, 1.0f0)], 3); s)
+            mk() = (s=ECANState(3);
+                s.sti=Float32[0.9, 0.1, 0.2];
+                s.C=ecan_build_weight_matrix([(1, 2, 1.0f0), (3, 2, 1.0f0)], 3); s)
 
             @test ecan_attentional_focus(mk(), 0.5f0) == [1]
             @test ecan_below_focus(mk(), 0.5f0) == [2, 3]
@@ -341,7 +347,7 @@ end
             af = mk()
             before = sum(af.sti)
             ecan_sti_spread!(af; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
-                             sources=ecan_attentional_focus(af, 0.5f0))
+                sources=ecan_attentional_focus(af, 0.5f0))
             @test af.sti[3] ≈ 0.2f0 atol = 1e-5
             @test af.sti[1] < 0.9f0
             @test sum(af.sti) ≈ before atol = 1e-5      # conservation holds per tier
@@ -349,7 +355,7 @@ end
             # WA tier: atom 1 is NOT a source, so it keeps its STI and atom 3 pays
             wa = mk()
             ecan_sti_spread!(wa; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
-                             sources=ecan_below_focus(wa, 0.5f0))
+                sources=ecan_below_focus(wa, 0.5f0))
             @test wa.sti[1] ≈ 0.9f0 atol = 1e-5
             @test wa.sti[3] < 0.2f0
             @test sum(wa.sti) ≈ before atol = 1e-5
@@ -360,7 +366,7 @@ end
             # an empty source set is a no-op, not an error or a wipe
             noop = mk()
             ecan_sti_spread!(noop; max_spread=MAXSPREAD, hebbian_max_allocation=HEBALLOC,
-                             sources=Int[])
+                sources=Int[])
             @test noop.sti == Float32[0.9, 0.1, 0.2]
 
             @test_throws ArgumentError ecan_sti_spread!(
@@ -495,13 +501,13 @@ end
         A = [0.0 -Inf; 5.0 -Inf]                       # (1,1)=sone 0.0, (2,1)=5.0, rest=szero -Inf
         _, _, nz_def, _, _ = dense_to_csr(A)           # default zero_val=0.0 (SumProduct) — old behavior
         @test !(0.0 in nz_def)                         # drops the 0.0 (would silently lose MaxPlus sone)
-        _, _, nz_mp, _, _ = dense_to_csr(A; zero_val=-Inf)   # szero(MaxPlus)
+        _, _, nz_mp, _, _ = dense_to_csr(A; zero_val=(-Inf))   # szero(MaxPlus)
         @test 0.0 in nz_mp                             # sone kept — the fix
         @test 5.0 in nz_mp
         @test !(-Inf in nz_mp)                         # szero dropped
         @test length(nz_mp) == 2
         # GPULayout copy returns a CSRMatrix but carries the same kwarg
-        csr = MORKTensorNetworks.GPULayout.dense_to_csr(A; zero_val=-Inf)
+        csr = MORKTensorNetworks.GPULayout.dense_to_csr(A; zero_val=(-Inf))
         @test 0.0 in csr.nzval && !(-Inf in csr.nzval)
     end
 
@@ -513,7 +519,8 @@ end
         rp, cv, nv, _, n = dense_to_csr(R)
         # 3×3×8 B = 72 B dense output; cap at 50 B → must error (not OOM silently).
         @test_throws ErrorException gpu_semiring_spmm(
-            SumProductSemiring(), rp, cv, nv, rp, cv, nv, n; backend=CPU(), max_dense_bytes=50)
+            SumProductSemiring(), rp, cv, nv, rp, cv, nv, n; backend=CPU(),
+            max_dense_bytes=50)
         # under the (default-generous) cap, a small contraction still runs.
         @test gpu_semiring_spmm(
             SumProductSemiring(), rp, cv, nv, rp, cv, nv, n; backend=CPU()) isa AbstractMatrix
@@ -694,43 +701,44 @@ end
         @test u_mix[2] == 0.0     # row 2 has a zero
     end
 
-@testset "PLN composition keeps truth STRENGTHS; the paper's semirings keep spec behaviour" begin
-    # Spec §3 defines composition as T = H(⊕ R ⊗ S), and for the four semirings the paper defines that
-    # is the behaviour — pinned below so this change cannot drift into a deviation from the paper.
-    # PLNSemiring is OURS (see the N1 note in Semirings.jl), and H is wrong for it: it maps every
-    # non-zero composed truth value to sone = 1.0, returning REACHABILITY with the strength destroyed.
-    #
-    # Found 2026-08-12 while checking an outside claim about path independence. Nothing caught it
-    # because PLN is an addition above the paper's four semirings and had no oracle of its own — the
-    # generic semiring tests exercise it as an algebra (oplus/otimes/identities) and never ask what a
-    # COMPOSITION under it should mean.
-    R = [0.0 0.8 0.0;
-         0.0 0.0 0.5;
-         0.0 0.0 0.0]
-    S = [0.0 0.0 0.0;
-         0.0 0.0 0.6;
-         0.0 0.0 0.0]
+    @testset "PLN composition keeps truth STRENGTHS; the paper's semirings keep spec behaviour" begin
+        # Spec §3 defines composition as T = H(⊕ R ⊗ S), and for the four semirings the paper defines that
+        # is the behaviour — pinned below so this change cannot drift into a deviation from the paper.
+        # PLNSemiring is OURS (see the N1 note in Semirings.jl), and H is wrong for it: it maps every
+        # non-zero composed truth value to sone = 1.0, returning REACHABILITY with the strength destroyed.
+        #
+        # Found 2026-08-12 while checking an outside claim about path independence. Nothing caught it
+        # because PLN is an addition above the paper's four semirings and had no oracle of its own — the
+        # generic semiring tests exercise it as an algebra (oplus/otimes/identities) and never ask what a
+        # COMPOSITION under it should mean.
+        R = [0.0 0.8 0.0;
+            0.0 0.0 0.5;
+            0.0 0.0 0.0]
+        S = [0.0 0.0 0.0;
+            0.0 0.0 0.6;
+            0.0 0.0 0.0]
 
-    # T[x,z] = max_y R[x,y] * S[y,z]. Only 1→2→3 contributes: 0.8 * 0.6 = 0.48.
-    T = path_compose(PLNSemiring(), R, S)
-    @test T[1, 3] ≈ 0.48
-    @test T[2, 3] == 0.0
-    @test !any(x -> x == 1.0, T)          # the defect's signature: every non-zero flattened to 1.0
+        # T[x,z] = max_y R[x,y] * S[y,z]. Only 1→2→3 contributes: 0.8 * 0.6 = 0.48.
+        T = path_compose(PLNSemiring(), R, S)
+        @test T[1, 3] ≈ 0.48
+        @test T[2, 3] == 0.0
+        @test !any(x -> x == 1.0, T)          # the defect's signature: every non-zero flattened to 1.0
 
-    # The Heaviside is still REACHABLE, just no longer the default for PLN.
-    Tth = path_compose(PLNSemiring(), R, S; apply_threshold = true)
-    @test Tth[1, 3] == 1.0
+        # The Heaviside is still REACHABLE, just no longer the default for PLN.
+        Tth = path_compose(PLNSemiring(), R, S; apply_threshold=true)
+        @test Tth[1, 3] == 1.0
 
-    # …and remains the DEFAULT for every semiring the paper defines.
-    for sr in (BooleanSemiring(), SumProductSemiring(), MaxPlusSemiring(), MinPlusSemiring())
-        @test MORKTensorNetworks.heaviside_default(sr)
+        # …and remains the DEFAULT for every semiring the paper defines.
+        for sr in
+            (BooleanSemiring(), SumProductSemiring(), MaxPlusSemiring(), MinPlusSemiring())
+            @test MORKTensorNetworks.heaviside_default(sr)
+        end
+        @test !MORKTensorNetworks.heaviside_default(PLNSemiring())
+
+        # Spec behaviour for SumProduct is unchanged by this edit: H projects the path count to 1.
+        B = [0.0 1.0 0.0; 0.0 0.0 1.0; 0.0 0.0 0.0]
+        @test path_compose(SumProductSemiring(), B, B)[1, 3] == 1.0
+        @test path_compose(SumProductSemiring(), B, B; apply_threshold=false)[1, 3] == 1.0
     end
-    @test !MORKTensorNetworks.heaviside_default(PLNSemiring())
-
-    # Spec behaviour for SumProduct is unchanged by this edit: H projects the path count to 1.
-    B = [0.0 1.0 0.0; 0.0 0.0 1.0; 0.0 0.0 0.0]
-    @test path_compose(SumProductSemiring(), B, B)[1, 3] == 1.0
-    @test path_compose(SumProductSemiring(), B, B; apply_threshold = false)[1, 3] == 1.0
-end
 
 end  # MORKTensorNetworks

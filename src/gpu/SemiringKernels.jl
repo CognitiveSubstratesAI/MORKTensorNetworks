@@ -303,7 +303,7 @@ function gpu_semiring_spmm(
     nzval_B,
     n_cols::Integer;
     backend=KernelAbstractions.CPU(),
-    max_dense_bytes::Real = 4 * 2^30,
+    max_dense_bytes::Real=4 * 2^30
 )
     m = length(rowptr_A) - 1
     T = eltype(nzval_A)
@@ -311,12 +311,16 @@ function gpu_semiring_spmm(
     # sparsity (metagraph scale). Error actionably rather than OOM silently.
     dense_bytes = m * Int(n_cols) * sizeof(T)
     if dense_bytes > max_dense_bytes
-        error("gpu_semiring_spmm: dense output would be " *
-              string(round(dense_bytes / 2^30; digits = 2)) * " GiB ($m × $n_cols × $(sizeof(T)) B), " *
-              "exceeding max_dense_bytes=" * string(round(max_dense_bytes / 2^30; digits = 2)) * " GiB. " *
-              "This SpGEMM materializes a DENSE output (it dodges the symbolic phase); at high output " *
-              "sparsity it is mostly zeros and hits a memory wall. The sparse-output variant is not yet " *
-              "built. Raise `max_dense_bytes` to force, or contract a smaller block.")
+        error(
+            "gpu_semiring_spmm: dense output would be " *
+            string(round(dense_bytes / 2^30; digits=2)) *
+            " GiB ($m × $n_cols × $(sizeof(T)) B), " *
+            "exceeding max_dense_bytes=" * string(round(max_dense_bytes / 2^30; digits=2)) *
+            " GiB. " *
+            "This SpGEMM materializes a DENSE output (it dodges the symbolic phase); at high output " *
+            "sparsity it is mostly zeros and hits a memory wall. The sparse-output variant is not yet " *
+            "built. Raise `max_dense_bytes` to force, or contract a smaller block."
+        )
     end
     C = KernelAbstractions.zeros(backend, T, m, n_cols)
     fill!(C, T(szero(sr)))

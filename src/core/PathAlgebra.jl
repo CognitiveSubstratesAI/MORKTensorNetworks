@@ -106,7 +106,7 @@ And the GPU path was unreachable because `gpu_semiring_spmm` did not exist.
 """
 function path_compose(
     sr::AbstractSemiring, R::AbstractMatrix, S::AbstractMatrix;
-    apply_threshold::Bool = heaviside_default(sr),
+    apply_threshold::Bool=heaviside_default(sr),
     backend=nothing
 )
     raw = if backend === nothing

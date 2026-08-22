@@ -272,7 +272,7 @@ function ECANState(atom_ids::Vector{A}) where {A}
     ECANState{A}(
         zeros(Float32, n), zeros(Float32, n),
         zeros(Float32, n, n), zeros(Float32, n, n),
-        atom_ids,
+        atom_ids
     )
 end
 
@@ -329,15 +329,16 @@ POSTCONDITION: every column sums to 1 (to Float32 rounding), hence `Σ(Dv) = Σv
 """
 function ecan_build_diffusion_matrix(
     C::AbstractMatrix{Float32},
-    S::Union{Nothing,AbstractMatrix{Float32}}=nothing;
+    S::Union{Nothing, AbstractMatrix{Float32}}=nothing;
     max_spread::Float32,                 # REQUIRED — Core: (max-spread-percentage)
-    hebbian_max_allocation::Float32,     # REQUIRED — Core: (hebbian-max-allocation-percentage)
+    hebbian_max_allocation::Float32     # REQUIRED — Core: (hebbian-max-allocation-percentage)
 )
     n = size(C, 1)
     @assert size(C, 2) == n "C must be square; got $(size(C))"
     @assert 0.0f0 <= max_spread <= 1.0f0 "max_spread must lie in [0,1]; got $max_spread"
     @assert 0.0f0 <= hebbian_max_allocation <= 1.0f0 "hebbian_max_allocation must lie in [0,1]"
-    S === nothing || @assert size(S) == (n, n) "S must match C; got $(size(S)) vs $(size(C))"
+    S === nothing ||
+        @assert size(S) == (n, n) "S must match C; got $(size(S)) vs $(size(C))"
 
     D = zeros(Float32, n, n)
     for src in 1:n, dst in 1:n
@@ -459,13 +460,13 @@ function ecan_sti_spread!(
     state::ECANState;
     max_spread::Float32,                 # REQUIRED — Core: (max-spread-percentage)
     hebbian_max_allocation::Float32,     # REQUIRED — Core: (hebbian-max-allocation-percentage)
-    sources::Union{Nothing,AbstractVector{Int}}=nothing,
+    sources::Union{Nothing, AbstractVector{Int}}=nothing
 )::ECANState
     n = length(state.sti)
     n == 0 && return state
     D = ecan_build_diffusion_matrix(
         state.C, state.S; max_spread=max_spread,
-        hebbian_max_allocation=hebbian_max_allocation,
+        hebbian_max_allocation=hebbian_max_allocation
     )
 
     # SOURCE RESTRICTION — the two-tier WA/AF split, expressed matrix-natively. Upstream runs two
