@@ -11,27 +11,27 @@ Depends on: PathMap (trie + zipper), MORK (Space, PathMap{UnitVal})
 """
 
 # L4 fix (audit 2026-06-04): pruned unused imports. Removed PathMap, ReadZipperCore,
-# WriteZipperCore, read_zipper, write_zipper_at_path, get_val_at, zipper_descend_to_byte!,
-# zipper_ascend_byte!, wz_graft!, SparseArrays, LinearAlgebra — none referenced in the
-# body. (wz_graft! was the tell for the unimplemented O(1) graft reattach — see M2 note
-# on patch_and_reattach!.) Added zipper_child_mask + test_bit for the H4 child-iteration.
+# WriteZipperCore, read_zipper, write_zipper_at_path, get_val_at, descend_to_byte!,
+# ascend_byte!, graft!, SparseArrays, LinearAlgebra — none referenced in the
+# body. (graft! was the tell for the unimplemented O(1) graft reattach — see M2 note
+# on patch_and_reattach!.) Added child_mask + test_bit for the H4 child-iteration.
 using PathMaps:
     read_zipper_at_path,
-    zipper_val_count,
+    val_count,
     set_val_at!,
     remove_val_at!,
-    zipper_to_next_val!,
-    zipper_path,
-    zipper_child_mask,
+    to_next_val!,
+    path,
+    child_mask,
     test_bit,
     # M2 — the O(1) Λ_s graft reattach (spec §2.5). All three are 1:1 ports:
-    #   trie_ref_at_path / tr_make_map  <- ZipperInfallibleSubtries::make_map (trie_ref.rs:290)
+    #   trie_ref_at_path / make_map  <- ZipperInfallibleSubtries::make_map (trie_ref.rs:290)
     #   write_zipper_at_path            <- zipper_head / write zipper factory
-    #   wz_graft_map!                   <- ZipperWriting::graft_map (write_zipper.rs:1464)
+    #   graft_map!                   <- ZipperWriting::graft_map (write_zipper.rs:1464)
     trie_ref_at_path,
-    tr_make_map,
+    make_map,
     write_zipper_at_path,
-    wz_graft_map!
+    graft_map!
 
 # ── §2.1: Shard + PatchRecord ──────────────────────────────────────────────────
 
@@ -89,17 +89,17 @@ function _partition_recursive!(
     btm, prefix::Vector{UInt8}, l_max::Int, prefixes::Vector{Vector{UInt8}}
 )
     rz = read_zipper_at_path(btm, prefix)
-    cost = zipper_val_count(rz)
+    cost = val_count(rz)
     if cost <= l_max || length(prefix) >= 8
         push!(prefixes, copy(prefix))
         return nothing
     end
     # H4 fix (audit 2026-06-04): iterate only PRESENT child bytes via
-    # zipper_child_mask + test_bit instead of scanning all 256 bytes and
+    # child_mask + test_bit instead of scanning all 256 bytes and
     # opening a zipper per byte. The original 256-way fan-out allocated
     # vcat(prefix, b) for all 256 bytes regardless of presence — O(256)
     # allocations and zipper-opens per node, dominating partition cost.
-    mask = zipper_child_mask(rz)
+    mask = child_mask(rz)
     found_children = false
     child_prefix = copy(prefix)
     push!(child_prefix, 0x00)   # reusable buffer: mutate last byte per child
@@ -124,7 +124,7 @@ Returns an empty Shard with the prefix set. Materialization (Step 3) fills array
 """
 function capture_shard(space, prefix::Vector{UInt8})::Shard
     rz = read_zipper_at_path(space.btm, prefix)
-    est = zipper_val_count(rz)
+    est = val_count(rz)
     return Shard(copy(prefix), Int[], Int[], Float32[], Vector{UInt8}[], PatchRecord[], est)
 end
 
@@ -192,7 +192,7 @@ Scope note (C4): this builds a CSR but the downstream path-algebra is still dens
 (`semiring_matmul`). The dense→sparse-output / SoA-arena rewrite remains the C4
 package-identity decision; this fix corrects the *relation encoding*, not density.
 
-`zipper_path` is relative to the shard prefix, so the full atom = `prefix ++ suffix`.
+`path` is relative to the shard prefix, so the full atom = `prefix ++ suffix`.
 """
 function materialize!(shard::Shard, space)::Shard
     prefix = shard.prefix
@@ -200,8 +200,8 @@ function materialize!(shard::Shard, space)::Shard
 
     # Collect full atom byte-paths (prefix ++ relative suffix).
     atoms = Vector{UInt8}[]
-    while zipper_to_next_val!(rz)
-        rel = collect(zipper_path(rz))
+    while to_next_val!(rz)
+        rel = collect(path(rz))
         push!(atoms, vcat(prefix, rel))
     end
     isempty(atoms) && return shard
@@ -291,8 +291,8 @@ end
 Returns number of patches applied.
 
 M2 RESOLVED 2026-08-05. The spec §2.5 O(1) Λ_s graft reattach is now implemented:
-`tr_make_map` the region out (structural sharing), patch the isolated copy, `wz_graft_map!` it back
-in one operation. `wz_graft!`'s import is no longer the unused tell — `wz_graft_map!` is live. The
+`make_map` the region out (structural sharing), patch the isolated copy, `graft_map!` it back
+in one operation. `graft!`'s import is no longer the unused tell — `graft_map!` is live. The
 owner decision this note asked for ("implement the graft reattach or update §2 to not claim O(1)")
 is answered by implementing it.
 
@@ -321,13 +321,13 @@ function patch_and_reattach!(shard::Shard, space)::Int
     # NOW: extract the shard region as an isolated map (O(1), structural sharing), patch THAT, and
     # put it back with a single graft. One descent to the prefix instead of N to leaf paths.
     #
-    # ⚠️ THE ISOLATION IS LOAD-BEARING AND WAS NOT FREE. `tr_make_map` aliased the shared node
+    # ⚠️ THE ISOLATION IS LOAD-BEARING AND WAS NOT FREE. `make_map` aliased the shared node
     # WITHOUT bumping its refcount until 2026-08-05, so `_cow_in_place!` (which forks only above 1)
     # mutated in place and every "local" write here would have landed in the LIVE trie — corrupting
     # regions the kernel never touched, with a symptom arbitrarily far from this call site. Fixed in
     # PathMap (`m.root = copy(focus_rc)`) with a refcount-asserting regression test; this is that
-    # fix's first consumer. Do not replace `tr_make_map` with a raw root assignment.
-    region = tr_make_map(trie_ref_at_path(space.btm, prefix))
+    # fix's first consumer. Do not replace `make_map` with a raw root assignment.
+    region = make_map(trie_ref_at_path(space.btm, prefix))
 
     for rec in shard.patch_log
         # RELATIVE paths now — the region map is rooted AT the prefix
@@ -341,7 +341,7 @@ function patch_and_reattach!(shard::Shard, space)::Int
     end
 
     # Λ_s: replace the whole subtrie in one operation.
-    wz_graft_map!(write_zipper_at_path(space.btm, prefix), region)
+    graft_map!(write_zipper_at_path(space.btm, prefix), region)
 
     empty!(shard.patch_log)   # clears log — call should_adapt BEFORE this
     return applied
