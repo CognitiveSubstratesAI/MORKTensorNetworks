@@ -39,7 +39,23 @@ case "$TARGET" in /*) ABS_TARGET="$TARGET" ;; *) ABS_TARGET="$ROOT/$TARGET" ;; e
 [ -f "$ABS_TARGET" ] || { echo "run_tests.sh: no such target: $ABS_TARGET" >&2; exit 2; }
 
 DRIVER="$(mktemp "${TMPDIR:-/tmp}/${PKG}_run_tests_XXXXXX.jl")"
-trap 'rm -f "$DRIVER"' EXIT
+# ── THE RUNNER WRITES THE EVIDENCE, NOT THE AGENT ────────────────────────────────────────────────
+# 🔴 UNTIL 2026-09-27 ONLY CORE'S RUNNERS DID THIS, so `require-tests-before-commit.sh` could not be
+# satisfied for this package by any legitimate means: the suite passed and the commit was refused.
+# A gate nothing can pass is not a gate — it trains you to work around it. Written ONLY on a real
+# exit 0 and REMOVED on failure, so a red suite cannot be followed by a green commit.
+# ⚠️ ONLY A FULL, UNFILTERED SUITE IS EVIDENCE — `run_tests.sh <one-file>` must not mark, or a
+# single passing probe would authorise a commit.
+# shellcheck source=../../workflows/test_marker.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/workflows/test_marker.sh" 2>/dev/null || true
+_on_exit() {
+    rc=$?
+    rm -f "$DRIVER"
+    if [ "$TARGET" = "test/runtests.jl" ] && command -v write_marker >/dev/null 2>&1; then
+        write_marker "$ROOT" "$rc" "run_tests.sh full suite"
+    fi
+}
+trap _on_exit EXIT
 
 # Include tools/repl.jl only when present — several packages have no REPL helper, and a hard
 # include would make this runner unusable in exactly those packages that most need it.
